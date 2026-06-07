@@ -1,0 +1,35 @@
+{
+  "schemaVersion": 1,
+  "id": "gardenia",
+  "version": "${version}",
+  "name": "Gardenia",
+  "description": "",
+  "authors": [],
+  "contact": {},
+  "license": "All-Rights-Reserved",
+  "icon": "gardenia/icons/render.png",
+  "environment": "client",
+  "entrypoints": {
+    "fabric-datagen": [
+      "cn.gardenia.client.GardeniaDataGenerator"
+    ],
+    "client": [
+      "cn.gardenia.client.GardeniaClient"
+    ],
+    "main": [
+      "cn.gardenia.Gardenia"
+    ]
+  },
+  "mixins": [
+    "gardenia.mixins.json",
+    {
+      "config": "gardenia.client.mixins.json",
+      "environment": "client"
+    }
+  ],
+  "depends": {
+    "fabricloader": ">=${loader_version}",
+    "fabric-api": "*",
+    "minecraft": "${minecraft_version}"
+  }
+}
