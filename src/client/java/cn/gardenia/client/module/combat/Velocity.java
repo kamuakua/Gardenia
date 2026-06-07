@@ -42,7 +42,6 @@ public class Velocity extends Module {
 
     private boolean lag;
     private boolean jump;
-    private boolean replaying;
     private int aliveTicks;
     private VelocityStage stage = VelocityStage.NONE;
 
@@ -93,7 +92,7 @@ public class Velocity extends Module {
     }
 
     private void onPacket(GlobalPacketEvent event) {
-        if (mc.player == null || replaying || !event.isReceive()) {
+        if (mc.player == null) {
             return;
         }
 
@@ -122,7 +121,7 @@ public class Velocity extends Module {
                 return;
             }
 
-            if (stage != VelocityStage.NONE) {
+            if (stage != VelocityStage.NONE && event.isReceive()) {
                 if (packet instanceof PlayerPositionLookS2CPacket || packet instanceof LookAtS2CPacket) {
                     stage = VelocityStage.LAG;
                     return;
@@ -275,16 +274,11 @@ public class Velocity extends Module {
             return;
         }
 
-        replaying = true;
-        try {
-            while (!packets.isEmpty()) {
-                Packet<?> packet = packets.poll();
-                if (packet != null && mc.getNetworkHandler() != null) {
-                    handle(packet, mc.getNetworkHandler());
-                }
+        while (!packets.isEmpty()) {
+            Packet<?> packet = packets.poll();
+            if (packet != null && mc.getNetworkHandler() != null) {
+                handle(packet, mc.getNetworkHandler());
             }
-        } finally {
-            replaying = false;
         }
     }
 
