@@ -11,6 +11,7 @@ import cn.gardenia.client.module.SprintModule;
 import cn.gardenia.client.module.combat.AutoClickerModule;
 import cn.gardenia.client.module.combat.AntiBots;
 import cn.gardenia.client.module.combat.CriticalsModule;
+import cn.gardenia.client.module.combat.KillAura;
 import cn.gardenia.client.module.combat.Velocity;
 import cn.gardenia.client.module.misc.AutoToolModule;
 import cn.gardenia.client.module.misc.FastPlaceModule;
@@ -42,6 +43,7 @@ public class GardeniaClient implements ClientModInitializer {
                 new HUDModule(),
                 new AutoClickerModule(),
                 new CriticalsModule(),
+                new KillAura(),
                 new AntiBots(),
                 new Velocity(),
                 new Teams(),

@@ -36,6 +36,7 @@ public class ToolManager {
     public final TargetFilter TARGET_FILTER = new TargetFilter();
     public final CPSTool CPS = new CPSTool();
     public final ReachTool REACH = new ReachTool();
+    public final RayCastTool RAY_CAST = new RayCastTool();
 
     public final BlockTool BLOCK = new BlockTool();
     public final PlacementTool PLACEMENT = new PlacementTool();
@@ -68,6 +69,7 @@ public class ToolManager {
         TARGET_FILTER.init();
         CPS.init();
         REACH.init();
+        RAY_CAST.init();
         BLOCK.init();
         PLACEMENT.init();
         ITEM.init();
