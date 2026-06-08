@@ -8,28 +8,35 @@ import cn.gardenia.client.module.macro.Macro;
 import cn.gardenia.client.module.macro.MacroManager;
 import com.google.gson.Gson;
 import com.google.gson.GsonBuilder;
-import com.google.gson.reflect.TypeToken;
+import com.google.gson.JsonArray;
+import com.google.gson.JsonElement;
+import com.google.gson.JsonObject;
+import com.google.gson.JsonParser;
 import net.fabricmc.loader.api.FabricLoader;
 
-import java.io.*;
-import java.lang.reflect.Type;
+import java.io.IOException;
+import java.io.Reader;
+import java.io.Writer;
 import java.nio.charset.StandardCharsets;
+import java.nio.file.Files;
 import java.nio.file.Path;
-import java.util.*;
+import java.util.Locale;
 
 public class ConfigManager {
     public static final ConfigManager INSTANCE = new ConfigManager();
 
     private static final Gson GSON = new GsonBuilder().setPrettyPrinting().create();
     private static final Path CONFIG_DIR = FabricLoader.getInstance().getConfigDir().resolve("gardenia");
-    private static final Path MODULES_FILE = CONFIG_DIR.resolve("modules.json");
+    private static final Path MODULES_FILE = CONFIG_DIR.resolve("module.json");
+    private static final Path LEGACY_MODULES_FILE = CONFIG_DIR.resolve("modules.json");
     private static final Path MISC_FILE = CONFIG_DIR.resolve("misc.json");
 
-    private ConfigManager() {}
+    private ConfigManager() {
+    }
 
     public void save() {
         try {
-            CONFIG_DIR.toFile().mkdirs();
+            Files.createDirectories(CONFIG_DIR);
             saveModules();
             saveMisc();
         } catch (Exception e) {
@@ -37,50 +44,9 @@ public class ConfigManager {
         }
     }
 
-    private void saveModules() {
-        try (Writer writer = new OutputStreamWriter(
-                new FileOutputStream(MODULES_FILE.toFile()), StandardCharsets.UTF_8)) {
-            Map<String, ModuleData> data = new LinkedHashMap<>();
-            for (Module m : ModuleManager.INSTANCE.getModules()) {
-                ModuleData md = new ModuleData();
-                md.enabled = m.isEnabled();
-                md.key = m.getKeyBind();
-                if (!m.getSettings().isEmpty()) {
-                    md.settings = new LinkedHashMap<>();
-                    for (Setting<?> s : m.getSettings()) {
-                        md.settings.put(s.getName(), String.valueOf(s.getValue()));
-                    }
-                }
-                data.put(m.getName(), md);
-            }
-            GSON.toJson(data, writer);
-        } catch (IOException e) {
-            e.printStackTrace();
-        }
-    }
-
-    private void saveMisc() {
-        try (Writer writer = new OutputStreamWriter(
-                new FileOutputStream(MISC_FILE.toFile()), StandardCharsets.UTF_8)) {
-            MiscData data = new MiscData();
-            data.prefix = CommandManager.INSTANCE.getPrefix();
-            data.macros = new ArrayList<>();
-            for (Macro m : MacroManager.INSTANCE.getMacros()) {
-                MacroData md = new MacroData();
-                md.name = m.getName();
-                md.key = m.getKey();
-                md.commands = m.getCommands();
-                data.macros.add(md);
-            }
-            GSON.toJson(data, writer);
-        } catch (IOException e) {
-            e.printStackTrace();
-        }
-    }
-
     public void load() {
         try {
-            CONFIG_DIR.toFile().mkdirs();
+            Files.createDirectories(CONFIG_DIR);
             loadModules();
             loadMisc();
         } catch (Exception e) {
@@ -88,79 +54,300 @@ public class ConfigManager {
         }
     }
 
-    private void loadModules() {
-        if (!MODULES_FILE.toFile().exists()) return;
-        try (Reader reader = new InputStreamReader(
-                new FileInputStream(MODULES_FILE.toFile()), StandardCharsets.UTF_8)) {
-            Type type = new TypeToken<Map<String, ModuleData>>() {}.getType();
-            Map<String, ModuleData> data = GSON.fromJson(reader, type);
-            if (data == null) return;
-            for (Module m : ModuleManager.INSTANCE.getModules()) {
-                ModuleData md = data.get(m.getName());
-                if (md != null) {
-                    m.setKeyBind(md.key);
-                    m.setEnabled(md.enabled);
-                    if (md.settings != null) {
-                        for (Setting<?> s : m.getSettings()) {
-                            String valStr = md.settings.get(s.getName());
-                            if (valStr != null) {
-                                try {
-                                    Object current = s.getValue();
-                                    if (current instanceof Boolean) {
-                                        ((Setting<Boolean>) s).setValue(Boolean.parseBoolean(valStr));
-                                    } else if (current instanceof Integer) {
-                                        ((Setting<Integer>) s).setValue(Integer.parseInt(valStr));
-                                    } else if (current instanceof Double) {
-                                        ((Setting<Double>) s).setValue(Double.parseDouble(valStr));
-                                    } else if (current instanceof Float) {
-                                        ((Setting<Float>) s).setValue(Float.parseFloat(valStr));
-                                    }
-                                } catch (Exception ignored) {}
-                            }
-                        }
-                    }
-                }
+    private void saveModules() throws IOException {
+        JsonObject root = new JsonObject();
+        for (Module module : ModuleManager.INSTANCE.getModules()) {
+            JsonObject moduleObject = new JsonObject();
+            moduleObject.addProperty("enabled", module.isEnabled());
+            moduleObject.addProperty("bind", module.getKeyBind());
+            moduleObject.addProperty("key", module.getKeyBind());
+            moduleObject.addProperty("keyBind", module.getKeyBind());
+
+            JsonObject settings = new JsonObject();
+            for (Setting<?> setting : module.getSettings()) {
+                settings.add(setting.getName(), settingToJson(setting));
             }
-        } catch (IOException e) {
-            e.printStackTrace();
+            if (!settings.isEmpty()) {
+                moduleObject.add("settings", settings);
+            }
+
+            root.add(module.getName(), moduleObject);
+        }
+
+        try (Writer writer = Files.newBufferedWriter(MODULES_FILE, StandardCharsets.UTF_8)) {
+            GSON.toJson(root, writer);
         }
     }
 
-    private void loadMisc() {
-        if (!MISC_FILE.toFile().exists()) return;
-        try (Reader reader = new InputStreamReader(
-                new FileInputStream(MISC_FILE.toFile()), StandardCharsets.UTF_8)) {
-            MiscData data = GSON.fromJson(reader, MiscData.class);
-            if (data == null) return;
-            if (data.prefix != null) {
-                CommandManager.INSTANCE.setPrefix(data.prefix);
+    private void loadModules() throws IOException {
+        Path modulesFile = Files.exists(MODULES_FILE) ? MODULES_FILE : LEGACY_MODULES_FILE;
+        if (!Files.exists(modulesFile)) {
+            return;
+        }
+
+        JsonObject root;
+        try (Reader reader = Files.newBufferedReader(modulesFile, StandardCharsets.UTF_8)) {
+            JsonElement parsed = JsonParser.parseReader(reader);
+            if (parsed == null || !parsed.isJsonObject()) {
+                return;
             }
-            if (data.macros != null) {
-                MacroManager.INSTANCE.clear();
-                for (MacroData md : data.macros) {
-                    Macro macro = new Macro(md.name, md.key, md.commands);
-                    MacroManager.INSTANCE.register(macro);
-                }
+            root = parsed.getAsJsonObject();
+        }
+
+        for (Module module : ModuleManager.INSTANCE.getModules()) {
+            JsonObject moduleObject = findObject(root, module.getName());
+            if (moduleObject == null) {
+                continue;
             }
-        } catch (IOException e) {
-            e.printStackTrace();
+
+            JsonObject settings = objectOrNull(moduleObject.get("settings"));
+            if (settings != null) {
+                loadSettings(module, settings);
+            }
+
+            Integer bind = readInt(moduleObject, "bind", "keyBind", "key");
+            if (bind != null) {
+                module.setKeyBind(bind);
+            }
+
+            Boolean enabled = readBoolean(moduleObject, "enabled");
+            if (enabled != null) {
+                module.setEnabled(enabled);
+            }
         }
     }
 
-    private static class ModuleData {
-        boolean enabled;
-        int key;
-        Map<String, String> settings;
+    private void loadSettings(Module module, JsonObject settings) {
+        for (Setting<?> setting : module.getSettings()) {
+            JsonElement value = findElement(settings, setting.getName());
+            if (value == null || value.isJsonNull()) {
+                continue;
+            }
+
+            try {
+                applySetting(setting, value);
+            } catch (Exception ignored) {
+                // Keep loading the rest of the config if one stale setting is invalid.
+            }
+        }
     }
 
-    private static class MiscData {
-        String prefix;
-        List<MacroData> macros;
+    @SuppressWarnings({"unchecked", "rawtypes"})
+    private void applySetting(Setting<?> setting, JsonElement value) {
+        Object current = setting.getValue();
+        if (current instanceof Boolean) {
+            ((Setting<Boolean>) setting).setValue(asBoolean(value, (Boolean) current));
+        } else if (current instanceof Integer) {
+            ((Setting<Integer>) setting).setValue(asInt(value, (Integer) current));
+        } else if (current instanceof Double) {
+            ((Setting<Double>) setting).setValue(asDouble(value, (Double) current));
+        } else if (current instanceof Float) {
+            ((Setting<Float>) setting).setValue((float) asDouble(value, (Float) current));
+        } else if (current instanceof Long) {
+            ((Setting<Long>) setting).setValue(asLong(value, (Long) current));
+        } else if (current instanceof String) {
+            ((Setting<String>) setting).setValue(asString(value, (String) current));
+        } else if (current instanceof Enum<?> enumValue) {
+            Class enumClass = enumValue.getDeclaringClass();
+            ((Setting<Enum>) setting).setValue(Enum.valueOf(enumClass, asString(value, enumValue.name()).toUpperCase(Locale.ROOT)));
+        }
     }
 
-    private static class MacroData {
-        String name;
-        int key;
-        String[] commands;
+    private JsonElement settingToJson(Setting<?> setting) {
+        Object value = setting.getValue();
+        if (value == null) {
+            return com.google.gson.JsonNull.INSTANCE;
+        }
+        if (value instanceof Boolean bool) {
+            return GSON.toJsonTree(bool);
+        }
+        if (value instanceof Number number) {
+            return GSON.toJsonTree(number);
+        }
+        if (value instanceof Enum<?> enumValue) {
+            return GSON.toJsonTree(enumValue.name());
+        }
+        return GSON.toJsonTree(String.valueOf(value));
+    }
+
+    private void saveMisc() throws IOException {
+        JsonObject root = new JsonObject();
+        root.addProperty("prefix", CommandManager.INSTANCE.getPrefix());
+
+        JsonArray macros = new JsonArray();
+        for (Macro macro : MacroManager.INSTANCE.getMacros()) {
+            JsonObject macroObject = new JsonObject();
+            macroObject.addProperty("name", macro.getName());
+            macroObject.addProperty("key", macro.getKey());
+
+            JsonArray commands = new JsonArray();
+            if (macro.getCommands() != null) {
+                for (String command : macro.getCommands()) {
+                    commands.add(command);
+                }
+            }
+            macroObject.add("commands", commands);
+            macros.add(macroObject);
+        }
+        root.add("macros", macros);
+
+        try (Writer writer = Files.newBufferedWriter(MISC_FILE, StandardCharsets.UTF_8)) {
+            GSON.toJson(root, writer);
+        }
+    }
+
+    private void loadMisc() throws IOException {
+        if (!Files.exists(MISC_FILE)) {
+            return;
+        }
+
+        JsonObject root;
+        try (Reader reader = Files.newBufferedReader(MISC_FILE, StandardCharsets.UTF_8)) {
+            JsonElement parsed = JsonParser.parseReader(reader);
+            if (parsed == null || !parsed.isJsonObject()) {
+                return;
+            }
+            root = parsed.getAsJsonObject();
+        }
+
+        String prefix = readString(root, "prefix");
+        if (prefix != null && !prefix.isEmpty()) {
+            CommandManager.INSTANCE.setPrefix(prefix);
+        }
+
+        JsonArray macros = arrayOrNull(root.get("macros"));
+        if (macros != null) {
+            MacroManager.INSTANCE.clear();
+            for (JsonElement element : macros) {
+                JsonObject macroObject = objectOrNull(element);
+                if (macroObject == null) {
+                    continue;
+                }
+
+                String name = readString(macroObject, "name");
+                Integer key = readInt(macroObject, "key");
+                JsonArray commandsJson = arrayOrNull(macroObject.get("commands"));
+                if (name == null || key == null || commandsJson == null) {
+                    continue;
+                }
+
+                String[] commands = new String[commandsJson.size()];
+                for (int i = 0; i < commandsJson.size(); i++) {
+                    commands[i] = asString(commandsJson.get(i), "");
+                }
+                MacroManager.INSTANCE.register(new Macro(name, key, commands));
+            }
+        }
+    }
+
+    private JsonObject findObject(JsonObject object, String key) {
+        JsonElement direct = object.get(key);
+        if (direct != null && direct.isJsonObject()) {
+            return direct.getAsJsonObject();
+        }
+
+        for (String candidate : object.keySet()) {
+            if (candidate.equalsIgnoreCase(key)) {
+                return objectOrNull(object.get(candidate));
+            }
+        }
+        return null;
+    }
+
+    private JsonElement findElement(JsonObject object, String key) {
+        JsonElement direct = object.get(key);
+        if (direct != null) {
+            return direct;
+        }
+
+        String normalizedKey = normalize(key);
+        for (String candidate : object.keySet()) {
+            if (candidate.equalsIgnoreCase(key) || normalize(candidate).equals(normalizedKey)) {
+                return object.get(candidate);
+            }
+        }
+        return null;
+    }
+
+    private String normalize(String value) {
+        return value == null ? "" : value.replace(" ", "").replace("_", "").replace("-", "").toLowerCase(Locale.ROOT);
+    }
+
+    private JsonObject objectOrNull(JsonElement element) {
+        return element != null && element.isJsonObject() ? element.getAsJsonObject() : null;
+    }
+
+    private JsonArray arrayOrNull(JsonElement element) {
+        return element != null && element.isJsonArray() ? element.getAsJsonArray() : null;
+    }
+
+    private Boolean readBoolean(JsonObject object, String key) {
+        JsonElement element = findElement(object, key);
+        return element == null || element.isJsonNull() ? null : asBoolean(element, false);
+    }
+
+    private Integer readInt(JsonObject object, String... keys) {
+        for (String key : keys) {
+            JsonElement element = findElement(object, key);
+            if (element != null && !element.isJsonNull()) {
+                return asInt(element, 0);
+            }
+        }
+        return null;
+    }
+
+    private String readString(JsonObject object, String key) {
+        JsonElement element = findElement(object, key);
+        return element == null || element.isJsonNull() ? null : asString(element, null);
+    }
+
+    private boolean asBoolean(JsonElement element, boolean fallback) {
+        try {
+            if (element.isJsonPrimitive()) {
+                return element.getAsBoolean();
+            }
+        } catch (Exception ignored) {
+        }
+        return fallback;
+    }
+
+    private int asInt(JsonElement element, int fallback) {
+        try {
+            if (element.isJsonPrimitive()) {
+                return element.getAsInt();
+            }
+        } catch (Exception ignored) {
+        }
+        return fallback;
+    }
+
+    private long asLong(JsonElement element, long fallback) {
+        try {
+            if (element.isJsonPrimitive()) {
+                return element.getAsLong();
+            }
+        } catch (Exception ignored) {
+        }
+        return fallback;
+    }
+
+    private double asDouble(JsonElement element, double fallback) {
+        try {
+            if (element.isJsonPrimitive()) {
+                return element.getAsDouble();
+            }
+        } catch (Exception ignored) {
+        }
+        return fallback;
+    }
+
+    private String asString(JsonElement element, String fallback) {
+        try {
+            if (element.isJsonPrimitive()) {
+                return element.getAsString();
+            }
+        } catch (Exception ignored) {
+        }
+        return fallback;
     }
 }

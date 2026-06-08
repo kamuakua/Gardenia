@@ -59,6 +59,7 @@ public class ClientPlayerEntityMixin {
                 rotation.y,
                 player.isOnGround()
         );
+        ToolManager.INSTANCE.ROTATION.onMotionPre(event.getYaw(), event.getPitch());
         EventBus.INSTANCE.post(event);
         gardenia$motionEvent = event;
         PlayerMotionContext.setActiveEvent(event);

@@ -6,6 +6,7 @@ import cn.gardenia.client.event.events.game.GameTickEvent;
 import cn.gardenia.client.event.events.game.ScreenCloseEvent;
 import cn.gardenia.client.event.events.game.ScreenOpenEvent;
 import cn.gardenia.client.event.events.input.ClickEvent;
+import cn.gardenia.client.config.ConfigManager;
 import cn.gardenia.client.module.ModuleManager;
 import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.gui.screen.Overlay;
@@ -54,5 +55,10 @@ public class MinecraftClientMixin {
         if (event.isCancelled()) {
             ci.cancel();
         }
+    }
+
+    @Inject(method = "stop", at = @At("HEAD"))
+    private void onStop(CallbackInfo ci) {
+        ConfigManager.INSTANCE.save();
     }
 }

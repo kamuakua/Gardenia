@@ -38,6 +38,12 @@ public class ClientCommonNetworkHandlerMixin {
         if (packet instanceof PlayerMoveC2SPacket movePacket) {
             PlayerMoveC2SPacket rewritten = rewriteMovePacket(movePacket);
             if (rewritten != movePacket) {
+                if (rewritten.changesLook() && mc.player != null) {
+                    ToolManager.INSTANCE.ROTATION.confirmSentRotation(
+                            rewritten.getYaw(mc.player.getYaw()),
+                            rewritten.getPitch(mc.player.getPitch())
+                    );
+                }
                 connection.send(rewritten);
                 ci.cancel();
             }

@@ -1,6 +1,7 @@
 package cn.gardenia.mixin.client.input;
 
 import cn.gardenia.client.module.combat.Velocity;
+import cn.gardenia.client.module.combat.CriticalsModule;
 import cn.gardenia.client.tool.ToolManager;
 import net.minecraft.client.input.KeyboardInput;
 import net.minecraft.client.input.Input;
@@ -15,6 +16,7 @@ public abstract class KeyboardInputMixin extends Input {
     @Inject(method = "tick", at = @At("TAIL"))
     private void onTick(CallbackInfo ci) {
         this.playerInput = Velocity.handleMoveInput(this.playerInput);
+        this.playerInput = CriticalsModule.handleMoveInput(this.playerInput);
         if (ToolManager.INSTANCE.ROTATION.isServerRotationActive()) {
             Vec2f fixed = ToolManager.INSTANCE.ROTATION.fixMovement(
                     this.movementForward,

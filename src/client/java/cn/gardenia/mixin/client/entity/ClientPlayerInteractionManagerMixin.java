@@ -1,6 +1,7 @@
 package cn.gardenia.mixin.client.entity;
 
 import cn.gardenia.client.event.EventBus;
+import cn.gardenia.client.event.EventPhase;
 import cn.gardenia.client.event.events.attack.AttackEntityEvent;
 import cn.gardenia.client.event.events.block.BlockBreakEvent;
 import cn.gardenia.client.event.events.block.BlockInteractEvent;
@@ -49,8 +50,14 @@ public class ClientPlayerInteractionManagerMixin {
     }
 
     @Inject(method = "attackEntity", at = @At("HEAD"))
-    private void onAttackEntity(PlayerEntity player, Entity target, CallbackInfo ci) {
-        AttackEntityEvent event = new AttackEntityEvent(target, 0);
+    private void onAttackEntityPre(PlayerEntity player, Entity target, CallbackInfo ci) {
+        AttackEntityEvent event = new AttackEntityEvent(target, 0, EventPhase.PRE);
+        EventBus.INSTANCE.post(event);
+    }
+
+    @Inject(method = "attackEntity", at = @At("TAIL"))
+    private void onAttackEntityPost(PlayerEntity player, Entity target, CallbackInfo ci) {
+        AttackEntityEvent event = new AttackEntityEvent(target, 0, EventPhase.POST);
         EventBus.INSTANCE.post(event);
     }
 

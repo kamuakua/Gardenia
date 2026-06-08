@@ -12,9 +12,13 @@ public class RotationTool {
     private Vec2f rotations;
     private Vec2f lastRotations;
     private Vec2f targetRotations;
+    private Vec2f animationRotation;
+    private Vec2f lastAnimationRotation;
     private Vec2f offset = new Vec2f(0.0F, 0.0F);
     private Predicate<Vec2f> raycast;
     private boolean active;
+    private boolean smoothed;
+    private double rotationSpeed;
     private float randomAngle;
 
     public void init() {
@@ -206,9 +210,25 @@ public class RotationTool {
         }
         ensureState();
         targetRotations = rotation;
+        rotationSpeed = speed;
         this.raycast = raycast;
-        rotations = smooth(lastRotations, targetRotations, speed, raycast);
         active = true;
+        smooth();
+    }
+
+    public void smooth() {
+        if (mc.player == null || targetRotations == null) {
+            return;
+        }
+        ensureState();
+        if (!smoothed) {
+            Vec2f target = targetRotations;
+            if (raycast != null && (Math.abs(target.x - rotations.x) > 5.0F || Math.abs(target.y - rotations.y) > 5.0F)) {
+                target = applyRaycastOffset(target, raycast);
+            }
+            rotations = smoothNaven(lastRotations, target, rotationSpeed);
+        }
+        smoothed = true;
     }
 
     public Vec2f getServerRotation() {
@@ -222,24 +242,108 @@ public class RotationTool {
         return active && rotations != null;
     }
 
+    public void setServerRotationActive(boolean active) {
+        this.active = active;
+    }
+
+    public boolean isSmoothed() {
+        return smoothed;
+    }
+
+    public void setSmoothed(boolean smoothed) {
+        this.smoothed = smoothed;
+    }
+
+    public Vec2f applySensitivityPatch(Vec2f rotation) {
+        if (rotation == null || mc.player == null) {
+            return rotation;
+        }
+
+        ensureState();
+        Vec2f previous = lastRotations != null ? lastRotations : new Vec2f(mc.player.getYaw(), mc.player.getPitch());
+        return applySensitivityPatch(rotation, previous);
+    }
+
+    public Vec2f applySensitivityPatch(Vec2f rotation, Vec2f previous) {
+        if (rotation == null || mc.player == null) {
+            return rotation;
+        }
+        if (previous == null) {
+            previous = new Vec2f(mc.player.getYaw(), mc.player.getPitch());
+        }
+
+        float sensitivity = (float) (((Double) mc.options.getMouseSensitivity().getValue()) * (1.0D + Math.random() / 10000000.0D) * 0.6F + 0.2F);
+        double multiplier = sensitivity * sensitivity * sensitivity * 8.0F * 0.15D;
+        float yaw = previous.x + (float) (Math.round((rotation.x - previous.x) / multiplier) * multiplier);
+        float pitch = previous.y + (float) (Math.round((rotation.y - previous.y) / multiplier) * multiplier);
+        return new Vec2f(yaw, clampPitch(pitch));
+    }
+
+    public Vec2f resetRotation(Vec2f rotation) {
+        if (rotation == null || mc.player == null) {
+            return rotation;
+        }
+        return new Vec2f(rotation.x + MathHelper.wrapDegrees(mc.player.getYaw() - rotation.x), mc.player.getPitch());
+    }
+
     public void tickServerRotation() {
         if (mc.player == null) {
             reset();
             return;
         }
         ensureState();
-        if (active && targetRotations != null) {
-            rotations = smooth(rotations, targetRotations, 180.0, raycast);
+        if (!active || rotations == null || lastRotations == null || targetRotations == null) {
+            Vec2f current = new Vec2f(mc.player.getYaw(), mc.player.getPitch());
+            rotations = current;
+            lastRotations = current;
+            targetRotations = current;
+        }
+        if (active) {
+            smooth();
+        }
+    }
+
+    public void onMotionPre(float yaw, float pitch) {
+        if (mc.player == null) {
+            return;
+        }
+        ensureState();
+        if (active && rotations != null) {
             lastRotations = rotations;
+            if (Math.abs(MathHelper.wrapDegrees(rotations.x - mc.player.getYaw())) < 1.0F && Math.abs(rotations.y - mc.player.getPitch()) < 1.0F) {
+                active = false;
+                correctDisabledRotations();
+            }
         } else {
             lastRotations = new Vec2f(mc.player.getYaw(), mc.player.getPitch());
         }
+
+        lastAnimationRotation = animationRotation;
+        animationRotation = new Vec2f(yaw, pitch);
         targetRotations = new Vec2f(mc.player.getYaw(), mc.player.getPitch());
+        smoothed = false;
+    }
+
+    public void confirmSentRotation(float yaw, float pitch) {
+        Vec2f sent = new Vec2f(yaw, pitch);
+        rotations = sent;
+        lastRotations = sent;
     }
 
     public void clearServerRotation() {
+        if (mc.player != null && active && rotations != null) {
+            // 发送最后的同步数据包，确保服务器知道玩家当前的真实朝向
+            Vec2f currentRotation = new Vec2f(mc.player.getYaw(), mc.player.getPitch());
+            if (Math.abs(rotations.x - currentRotation.x) > 1.0F || Math.abs(rotations.y - currentRotation.y) > 1.0F) {
+                // 只有在旋转差异较大时才发送同步包
+                correctDisabledRotations();
+            }
+        }
+
         active = false;
         raycast = null;
+        smoothed = false;
+        rotationSpeed = 0.0D;
         randomAngle = 0.0F;
         offset = new Vec2f(0.0F, 0.0F);
         if (mc.player != null) {
@@ -362,6 +466,62 @@ public class RotationTool {
         return smoothAngle(from, target, (float) speed);
     }
 
+    private Vec2f move(Vec2f lastRotation, Vec2f targetRotation, double speed) {
+        if (lastRotation == null || targetRotation == null || speed == 0.0D) {
+            return new Vec2f(0.0F, 0.0F);
+        }
+
+        double deltaYaw = MathHelper.wrapDegrees(targetRotation.x - lastRotation.x);
+        double deltaPitch = targetRotation.y - lastRotation.y;
+        double distance = Math.sqrt(deltaYaw * deltaYaw + deltaPitch * deltaPitch);
+        if (distance <= 0.0D) {
+            return new Vec2f(0.0F, 0.0F);
+        }
+
+        double distributionYaw = Math.abs(deltaYaw / distance);
+        double distributionPitch = Math.abs(deltaPitch / distance);
+        double maxYaw = speed * distributionYaw;
+        double maxPitch = speed * distributionPitch;
+        float moveYaw = (float) Math.max(Math.min(deltaYaw, maxYaw), -maxYaw);
+        float movePitch = (float) Math.max(Math.min(deltaPitch, maxPitch), -maxPitch);
+        return new Vec2f(moveYaw, movePitch);
+    }
+
+    private Vec2f smoothNaven(Vec2f lastRotation, Vec2f targetRotation, double speed) {
+        if (lastRotation == null || targetRotation == null) {
+            return targetRotation;
+        }
+
+        float yaw = targetRotation.x;
+        float pitch = targetRotation.y;
+        float lastYaw = lastRotation.x;
+        float lastPitch = lastRotation.y;
+
+        if (speed != 0.0D) {
+            Vec2f move = move(lastRotation, targetRotation, speed);
+            yaw = lastYaw + move.x;
+            pitch = lastPitch + move.y;
+
+            int iterations = Math.max(1, (int) (mc.getCurrentFps() / 20.0F + Math.random() * 10.0D));
+            for (int i = 1; i <= iterations; i++) {
+                if (Math.abs(move.x) + Math.abs(move.y) > 0.0001D) {
+                    yaw += (float) ((Math.random() - 0.5D) / 1000.0D);
+                    pitch -= (float) (Math.random() / 200.0D);
+                }
+
+                Vec2f fixed = applySensitivityPatch(new Vec2f(yaw, pitch));
+                yaw = shortestYaw(lastYaw, fixed.x);
+                pitch = clampPitch(fixed.y);
+            }
+        }
+
+        return new Vec2f(yaw, clampPitch(pitch));
+    }
+
+    private float shortestYaw(float from, float to) {
+        return from + MathHelper.wrapDegrees(to - from);
+    }
+
     private Vec2f applyRaycastOffset(Vec2f target, Predicate<Vec2f> raycast) {
         double speed = Math.random() * Math.random() * Math.random() * 20.0D;
         randomAngle += (float) ((20.0F + (float) (Math.random() - 0.5D) * (Math.random() * Math.random() * Math.random() * 360.0D))
@@ -390,8 +550,27 @@ public class RotationTool {
 
     private void reset() {
         active = false;
+        smoothed = false;
         rotations = null;
         lastRotations = null;
         targetRotations = null;
+        animationRotation = null;
+        lastAnimationRotation = null;
+        rotationSpeed = 0.0D;
+        raycast = null;
+        randomAngle = 0.0F;
+        offset = new Vec2f(0.0F, 0.0F);
+    }
+
+    private void correctDisabledRotations() {
+        if (mc.player == null || lastRotations == null) {
+            return;
+        }
+
+        Vec2f fixed = resetRotation(applySensitivityPatch(new Vec2f(mc.player.getYaw(), mc.player.getPitch()), lastRotations));
+        if (fixed != null && !Float.isNaN(fixed.x) && !Float.isNaN(fixed.y)) {
+            mc.player.setYaw(fixed.x);
+            mc.player.setPitch(fixed.y);
+        }
     }
 }
