@@ -5,7 +5,9 @@ import cn.gardenia.client.event.EventPhase;
 import cn.gardenia.client.event.events.movement.PlayerMotionContext;
 import cn.gardenia.client.event.events.movement.PlayerMotionEvent;
 import cn.gardenia.client.event.events.movement.MovementEvent;
+import cn.gardenia.client.event.events.movement.NewVelocityGameTickEvent;
 import cn.gardenia.client.event.events.player.*;
+import cn.gardenia.client.module.move.NoSlowModule;
 import cn.gardenia.client.tool.ToolManager;
 import net.minecraft.client.network.ClientPlayerEntity;
 import net.minecraft.entity.MovementType;
@@ -15,7 +17,9 @@ import net.minecraft.util.math.Vec3d;
 import org.spongepowered.asm.mixin.Mixin;
 import org.spongepowered.asm.mixin.injection.At.Shift;
 import org.spongepowered.asm.mixin.injection.At;
+import org.spongepowered.asm.mixin.injection.Constant;
 import org.spongepowered.asm.mixin.injection.Inject;
+import org.spongepowered.asm.mixin.injection.ModifyConstant;
 import org.spongepowered.asm.mixin.injection.callback.CallbackInfo;
 
 @Mixin(ClientPlayerEntity.class)
@@ -31,6 +35,16 @@ public class ClientPlayerEntityMixin {
     @Inject(method = "tick", at = @At("TAIL"))
     private void onPostTick(CallbackInfo ci) {
         EventBus.INSTANCE.post(new PlayerTickEvent(EventPhase.POST));
+    }
+
+    @ModifyConstant(method = "tickMovement", constant = @Constant(floatValue = 0.2F))
+    private float modifyUseItemSlowdown(float original) {
+        return NoSlowModule.shouldPreventInputSlowdown() ? 1.0F : original;
+    }
+
+    @Inject(method = "tickMovement", at = @At("HEAD"))
+    private void onTickMovementHead(CallbackInfo ci) {
+        EventBus.INSTANCE.post(new NewVelocityGameTickEvent());
     }
 
     @Inject(method = "swingHand", at = @At("HEAD"))

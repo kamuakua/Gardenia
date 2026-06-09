@@ -1,13 +1,17 @@
 package cn.gardenia.client.module.combat;
 
+import cn.gardenia.client.event.events.attack.AttackSlowdownEvent;
+import cn.gardenia.client.event.events.player.PlayerRespawnEvent;
 import cn.gardenia.client.event.events.player.PlayerTickEvent;
 import cn.gardenia.client.event.events.render.Render3DEvent;
 import cn.gardenia.client.module.Category;
 import cn.gardenia.client.module.Module;
 import cn.gardenia.client.module.ModuleManager;
 import cn.gardenia.client.module.Setting;
+import cn.gardenia.client.module.misc.ClientFriendModule;
 import cn.gardenia.client.module.misc.Target;
 import cn.gardenia.client.module.misc.Teams;
+import cn.gardenia.client.module.move.BlinkModule;
 import cn.gardenia.client.social.FriendManager;
 import cn.gardenia.client.tool.ToolManager;
 import com.mojang.blaze3d.systems.RenderSystem;
@@ -20,6 +24,9 @@ import net.minecraft.client.util.math.MatrixStack;
 import net.minecraft.entity.Entity;
 import net.minecraft.entity.LivingEntity;
 import net.minecraft.entity.player.PlayerEntity;
+import net.minecraft.item.ArmorItem;
+import net.minecraft.item.ItemStack;
+import net.minecraft.item.Items;
 import net.minecraft.util.Hand;
 import net.minecraft.util.hit.EntityHitResult;
 import net.minecraft.util.hit.HitResult;
@@ -31,387 +38,186 @@ import org.joml.Matrix4fStack;
 import org.joml.Quaternionf;
 import org.joml.Vector3f;
 
-import java.awt.Color;
 import java.util.ArrayList;
 import java.util.Comparator;
 import java.util.List;
+import java.util.concurrent.ThreadLocalRandom;
 import java.util.function.Consumer;
+import java.util.stream.Collectors;
 
 public class KillAura extends Module {
     public static KillAura INSTANCE;
 
-    private Entity target;
-    private Entity lastTarget;
+    private final Setting<String> mode = new Setting<>("Mode", "Target switch mode", "Single", new String[]{"Single", "Switch"});
+    public final Setting<Double> aimRange = rangedDouble("AimRange", "Target aim range", 3.0D, 0.0D, 10.0D, 0.1D);
+    private final Setting<Boolean> throughWalls = new Setting<>("ThroughWalls", "Attack through walls", false);
+    public final Setting<Double> wallRange = rangedDouble("WallRange", "Through-wall range", 3.0D, 0.0D, 10.0D, 0.1D);
+    public final Setting<Double> attackRange = rangedDouble("AttackRange", "Attack execution range", 3.0D, 0.0D, 10.0D, 0.1D);
+    private final Setting<Double> switchDelay = rangedDouble("SwitchDelay", "Switch delay in ticks", 1.0D, 1.0D, 10.0D, 1.0D);
+    private final Setting<String> priority = new Setting<>("Priority", "Target priority", "Distance", new String[]{"Health", "Distance", "Armor", "Baby"});
+    private final Setting<Double> minAps = rangedDouble("MinAps", "Minimum attacks per second", 10.0D, 1.0D, 20.0D, 1.0D);
+    private final Setting<Double> maxAps = rangedDouble("MaxAps", "Maximum attacks per second", 12.0D, 1.0D, 20.0D, 1.0D);
+    private final Setting<Boolean> autoBlock = new Setting<>("AutoBlock", "Track block target range", false);
+    private final Setting<Double> blockRange = rangedDouble("BlockRange", "AutoBlock target range", 3.0D, 0.0D, 10.0D, 0.1D);
+    private final Setting<String> esp = new Setting<>("ESP", "ESP mode", "Off", new String[]{"Off", "Circle", "Around", "Box"});
+    private final Setting<String> keepSprintValue = new Setting<>("KeepSprint", "Keep sprint mode", "Off", new String[]{"Off", "Vanilla", "Prediction"});
+    private final Setting<Boolean> autoDisable = new Setting<>("AutoDisable", "Disable on respawn", true);
 
-    // 基础设置
-    private final Setting<Double> attackRange = rangedDouble("Attack Range", "实际攻击范围", 3.2D, 3.0D, 6.0D, 0.1D);
-    private final Setting<Double> scanRange = rangedDouble("Scan Range", "搜索目标范围", 5.0D, 3.0D, 8.0D, 0.1D);
-    private final Setting<Boolean> mode19 = new Setting<>("1.9 Mode", "使用1.9攻击冷却", false);
-    private final Setting<Double> cps = rangedDouble("CPS", "每秒攻击次数", 12.0D, 1.0D, 20.0D, 0.5D);
-
-    // 旋转设置
-    private final Setting<Double> rotateSpeed = rangedDouble("Rotation Speed", "旋转速度", 120.0D, 30.0D, 180.0D, 5.0D);
-    private final Setting<Boolean> strictRotation = new Setting<>("Strict Rotation", "严格旋转检测（必须瞄准才攻击）", true);
-    private final Setting<Integer> rotationDelay = rangedInt("Rotation Delay", "旋转延迟（tick）", 1, 0, 5, 1);
-    private final Setting<Boolean> smoothDisable = new Setting<>("Smooth Disable", "平滑禁用旋转", true);
-
-    // 目标选择
-    private final Setting<String> targetMode = new Setting<>("Target Mode", "目标选择模式", "Distance", new String[]{"Distance", "Health", "Angle"});
-    private final Setting<Double> fov = rangedDouble("FOV", "视野角度限制", 180.0D, 30.0D, 360.0D, 10.0D);
-    private final Setting<Integer> switchDelay = rangedInt("Switch Delay", "切换目标延迟（tick）", 5, 0, 20, 1);
-
-    // 攻击控制
-    private final Setting<Boolean> autoBlock = new Setting<>("Auto Block", "自动格挡", false);
-    private final Setting<Boolean> raytraceCheck = new Setting<>("Raytrace", "射线检测（只攻击能看到的）", true);
-    private final Setting<Boolean> rotationCheck = new Setting<>("Rotation Check", "旋转检测（必须面向目标）", true);
-
-    private List<Entity> targets = new ArrayList<>();
-    private long lastAttackTime = 0L;
-    private int ticksSinceLastTarget = 0;
-    private int rotationTicks = 0;
-    private boolean hasRotated = false;
-    private int disableRotationTicks = 0;
-    private boolean isDisabling = false;
-
-    private final Consumer<PlayerTickEvent> tickListener = this::onPreTick;
+    private final Consumer<PlayerTickEvent> tickListener = this::onPlayerTick;
+    private final Consumer<AttackSlowdownEvent> attackSlowdownListener = this::onAttackSlowdown;
+    private final Consumer<PlayerRespawnEvent> respawnListener = this::onRespawn;
     private final Consumer<Render3DEvent> renderListener = this::onRender;
 
+    public Entity target;
+    private List<Entity> targets = new ArrayList<>();
+    private Entity delayedTarget;
+    private int keepSprintTick;
+    private boolean pendingStopSprint;
+    private boolean blocking;
+    private long lastAttackTime;
+    private long cpsDelay;
+    private int lastCPSMin;
+    private int lastCPSMax;
+    private int switchIndex;
+    private long lastSwitchTime;
+    private boolean wasOnGroundBeforeAttack;
+
     public KillAura() {
-        super("KillAura", "自动攻击附近实体", Category.COMBAT);
+        super("KillAura", "Automatically attacks entities", Category.COMBAT);
         INSTANCE = this;
 
+        addSetting(mode);
+        addSetting(aimRange);
+        addSetting(throughWalls);
+        addSetting(wallRange);
         addSetting(attackRange);
-        addSetting(scanRange);
-        addSetting(mode19);
-        addSetting(cps);
-        addSetting(rotateSpeed);
-        addSetting(strictRotation);
-        addSetting(rotationDelay);
-        addSetting(smoothDisable);
-        addSetting(targetMode);
-        addSetting(fov);
         addSetting(switchDelay);
+        addSetting(priority);
+        addSetting(minAps);
+        addSetting(maxAps);
         addSetting(autoBlock);
-        addSetting(raytraceCheck);
-        addSetting(rotationCheck);
+        addSetting(blockRange);
+        addSetting(esp);
+        addSetting(keepSprintValue);
+        addSetting(autoDisable);
     }
 
     @Override
     public void onEnable() {
         INSTANCE = this;
         resetState();
+        resetCPS();
         subscribe(PlayerTickEvent.class, tickListener);
+        subscribe(AttackSlowdownEvent.class, attackSlowdownListener);
+        subscribe(PlayerRespawnEvent.class, respawnListener);
         subscribe(Render3DEvent.class, renderListener);
     }
 
     @Override
     public void onDisable() {
         unsubscribe(PlayerTickEvent.class, tickListener);
+        unsubscribe(AttackSlowdownEvent.class, attackSlowdownListener);
+        unsubscribe(PlayerRespawnEvent.class, respawnListener);
         unsubscribe(Render3DEvent.class, renderListener);
-
-        // 平滑清理旋转
-        if (smoothDisable.getBoolean() && (target != null || ToolManager.INSTANCE.ROTATION.isServerRotationActive())) {
-            isDisabling = true;
-            disableRotationTicks = 4;
-        } else {
-            ToolManager.INSTANCE.ROTATION.clearServerRotation();
-        }
-
+        ToolManager.INSTANCE.ROTATION.clearServerRotation();
         resetState();
     }
 
-    private void resetState() {
-        target = null;
-        lastTarget = null;
-        targets.clear();
-        lastAttackTime = 0L;
-        ticksSinceLastTarget = 0;
-        rotationTicks = 0;
-        hasRotated = false;
-        disableRotationTicks = 0;
-        isDisabling = false;
-    }
-
     public String getSuffix() {
-        return targets.isEmpty() ? "Idle" : targets.size() + " Targets";
+        return targets.size() + " Targets";
     }
 
-    private void onPreTick(PlayerTickEvent event) {
+    private void onPlayerTick(PlayerTickEvent event) {
         if (mc.player == null || mc.world == null || !event.isPre()) {
             return;
         }
 
-        // 处理禁用时的平滑过渡
-        if (isDisabling) {
-            handleSmoothDisable();
-            return;
-        }
-
-        // 查找并选择目标
-        findTargets();
-        selectTarget();
-
-        // 目标切换延迟
-        if (target != lastTarget) {
-            ticksSinceLastTarget = 0;
-            lastTarget = target;
-            rotationTicks = 0;
-            hasRotated = false;
-        }
-
-        if (target != null) {
-            ticksSinceLastTarget++;
-
-            // 应用切换延迟
-            if (ticksSinceLastTarget < switchDelay.getInt()) {
-                return;
-            }
-
-            // 执行旋转
-            handleRotation();
-
-            // 检查是否可以攻击
-            if (canAttack()) {
-                attackTarget();
-            }
-        } else {
-            // 失去目标时的平滑处理
-            handleTargetLoss();
-        }
+        onPreUpdate();
+        onUpdate();
     }
 
-    private void handleRotation() {
-        if (target == null || mc.player == null) {
-            return;
-        }
-
-        // 计算目标旋转
-        Vec3d targetPos = getTargetPoint(target);
-        Vec2f targetRotation = ToolManager.INSTANCE.ROTATION.calculate(targetPos);
-
-        // 设置服务器旋转，带射线检测
-        ToolManager.INSTANCE.ROTATION.setServerRotation(
-            targetRotation,
-            rotateSpeed.getDouble(),
-            rotation -> {
-                if (!raytraceCheck.getBoolean()) {
-                    return true;
+    private void onPreUpdate() {
+        if (keepSprintTick > 0) {
+            if (keepSprintTick == 2) {
+                keepSprintTick = 1;
+            } else if (keepSprintTick == 1) {
+                if (delayedTarget != null && filter(delayedTarget)) {
+                    executeAttack(delayedTarget);
                 }
-                HitResult hitResult = ToolManager.INSTANCE.RAY_CAST.rayCast(rotation, attackRange.getDouble(), 0.0F);
-                return hitResult instanceof EntityHitResult entityHitResult
-                    && entityHitResult.getEntity().equals(target);
+                pendingStopSprint = false;
+                delayedTarget = null;
+                keepSprintTick = 0;
             }
-        );
-
-        rotationTicks++;
-
-        // 检查旋转是否完成
-        if (rotationTicks >= rotationDelay.getInt()) {
-            Vec2f currentRotation = ToolManager.INSTANCE.ROTATION.getServerRotation();
-            float yawDiff = Math.abs(ToolManager.INSTANCE.ROTATION.angleDifference(currentRotation.x, targetRotation.x));
-            float pitchDiff = Math.abs(currentRotation.y - targetRotation.y);
-
-            hasRotated = yawDiff < 8.0F && pitchDiff < 8.0F;
         }
     }
 
-    private void handleTargetLoss() {
-        if (!ToolManager.INSTANCE.ROTATION.isServerRotationActive()) {
-            rotationTicks = 0;
-            hasRotated = false;
+    private void onUpdate() {
+        boolean blinkEnabled = isModuleEnabled(BlinkModule.class);
+        boolean shouldAB = !blinkEnabled && !getTargets(blockRange.getDouble()).isEmpty();
+        if (blinkEnabled) {
             return;
         }
 
-        // 平滑过渡到玩家当前朝向
-        if (smoothDisable.getBoolean()) {
-            Vec2f currentRotation = new Vec2f(mc.player.getYaw(), mc.player.getPitch());
-            ToolManager.INSTANCE.ROTATION.setServerRotation(currentRotation, 180.0D);
-
-            disableRotationTicks++;
-            if (disableRotationTicks >= 3) {
-                ToolManager.INSTANCE.ROTATION.clearServerRotation();
-                disableRotationTicks = 0;
-                rotationTicks = 0;
-                hasRotated = false;
-            }
-        } else {
-            ToolManager.INSTANCE.ROTATION.clearServerRotation();
-            rotationTicks = 0;
-            hasRotated = false;
-        }
-    }
-
-    private void handleSmoothDisable() {
-        if (disableRotationTicks > 0) {
-            Vec2f currentRotation = new Vec2f(mc.player.getYaw(), mc.player.getPitch());
-            ToolManager.INSTANCE.ROTATION.setServerRotation(currentRotation, 180.0D);
-            disableRotationTicks--;
-        } else {
-            ToolManager.INSTANCE.ROTATION.clearServerRotation();
-            isDisabling = false;
-        }
-    }
-
-    private boolean canAttack() {
-        if (target == null || mc.player == null) {
-            return false;
-        }
-
-        // 检查旋转完成度
-        if (strictRotation.getBoolean() && !hasRotated) {
-            return false;
-        }
-
-        // 检查距离
-        double distance = mc.player.distanceTo(target);
-        if (distance > attackRange.getDouble()) {
-            return false;
-        }
-
-        // 检查是否面向目标
-        if (rotationCheck.getBoolean()) {
-            Vec2f targetRotation = ToolManager.INSTANCE.ROTATION.calculate(target);
-            Vec2f currentRotation = ToolManager.INSTANCE.ROTATION.getServerRotation();
-            float yawDiff = Math.abs(ToolManager.INSTANCE.ROTATION.angleDifference(currentRotation.x, targetRotation.x));
-
-            if (yawDiff > 45.0F) {
-                return false;
-            }
-        }
-
-        // 检查射线
-        if (raytraceCheck.getBoolean()) {
-            HitResult hitResult = mc.crosshairTarget;
-            if (!(hitResult instanceof EntityHitResult entityHitResult)
-                || !entityHitResult.getEntity().equals(target)) {
-                return false;
-            }
-        }
-
-        // 检查攻击冷却
-        if (mode19.getBoolean()) {
-            return mc.player.getAttackCooldownProgress(0.0F) >= 1.0F;
-        }
-
-        // 检查CPS限制
-        long currentTime = System.currentTimeMillis();
-        double baseDelay = 1000.0D / Math.max(1.0D, cps.getDouble());
-        long delay = (long) (baseDelay * (0.8D + Math.random() * 0.4D)); // ±20% 随机性
-
-        return currentTime - lastAttackTime >= delay;
-    }
-
-    private void attackTarget() {
-        if (target == null || mc.player == null || mc.interactionManager == null) {
-            return;
-        }
-
-        mc.interactionManager.attackEntity(mc.player, target);
-        mc.player.swingHand(Hand.MAIN_HAND);
-        lastAttackTime = System.currentTimeMillis();
-    }
-
-    private void findTargets() {
-        if (mc.player == null || mc.world == null) {
-            targets.clear();
-            return;
-        }
-
-        double range = scanRange.getDouble();
-        double currentFov = fov.getDouble();
-
-        Box searchBox = mc.player.getBoundingBox().expand(range);
-        targets = mc.world.getOtherEntities(
-            mc.player,
-            searchBox,
-            entity -> entity instanceof LivingEntity
-                && entity != mc.player
-                && entity.isAlive()
-                && !entity.isSpectator()
-                && !entity.isRemoved()
-                && !AntiBots.isBot(entity)
-                && isTargetEnabled(entity)
-                && !Teams.isSameTeam(entity)
-                && !FriendManager.isFriend(entity)
-                && !isClientUser(entity)
-                && mc.player.distanceTo(entity) <= range
-                && isInFOV(entity, currentFov)
-        );
-    }
-
-    private void selectTarget() {
+        blocking = shouldAB;
+        targets = getTargets(aimRange.getDouble(), priority.getString());
         if (targets.isEmpty()) {
             target = null;
             return;
         }
 
-        String mode = targetMode.getString();
-        Entity newTarget = null;
-
-        switch (mode) {
-            case "Distance":
-                newTarget = targets.stream()
-                    .min(Comparator.comparingDouble(e -> mc.player.distanceTo(e)))
-                    .orElse(null);
-                break;
-
-            case "Health":
-                newTarget = targets.stream()
-                    .filter(e -> e instanceof LivingEntity)
-                    .min(Comparator.comparingDouble(e -> ((LivingEntity) e).getHealth()))
-                    .orElse(null);
-                break;
-
-            case "Angle":
-                newTarget = targets.stream()
-                    .min(Comparator.comparingDouble(e -> {
-                        Vec2f rotation = ToolManager.INSTANCE.ROTATION.calculate(e);
-                        float yawDiff = Math.abs(ToolManager.INSTANCE.ROTATION.getYawDifference(e.getBoundingBox().getCenter()));
-                        return yawDiff;
-                    }))
-                    .orElse(null);
-                break;
+        int currentMin = (int) Math.round(minAps.getDouble());
+        int currentMax = (int) Math.round(maxAps.getDouble());
+        if (currentMin != lastCPSMin || currentMax != lastCPSMax) {
+            lastCPSMin = currentMin;
+            lastCPSMax = currentMax;
+            resetCPS();
         }
 
-        target = newTarget;
-    }
-
-    private Vec3d getTargetPoint(Entity entity) {
-        if (entity == null) {
-            return Vec3d.ZERO;
+        if ("Single".equals(mode.getString())) {
+            target = targets.get(0);
+            rotateTo(target, aimRange.getDouble());
+        } else if ("Switch".equals(mode.getString())) {
+            updateSwitchTarget();
+            if (target != null) {
+                rotateTo(target, aimRange.getDouble());
+            }
         }
 
-        // 瞄准躯干中心点
-        double heightOffset = entity.getHeight() * 0.7D;
-
-        // 添加预测（基于目标速度）
-        Vec3d velocity = entity.getVelocity();
-        double velocityMultiplier = 0.15D; // 轻微预测
-
-        return entity.getPos()
-            .add(0, heightOffset, 0)
-            .add(velocity.multiply(velocityMultiplier));
-    }
-
-    private boolean isInFOV(Entity entity, double fovAngle) {
-        if (fovAngle >= 360.0D) {
-            return true;
+        if (keepSprintTick > 0 || pendingStopSprint) {
+            return;
         }
 
-        Vec2f rotation = ToolManager.INSTANCE.ROTATION.calculate(entity);
-        float yawDiff = Math.abs(ToolManager.INSTANCE.ROTATION.angleDifference(mc.player.getYaw(), rotation.x));
-
-        return yawDiff <= fovAngle / 2.0D;
+        tryAttack(target, aimRange.getDouble(), wallRange.getDouble());
     }
 
-    private boolean isTargetEnabled(Entity entity) {
-        Target targetModule = ModuleManager.INSTANCE.getByClass(Target.class);
-        return targetModule == null || targetModule.isTarget(entity);
+    private void onAttackSlowdown(AttackSlowdownEvent event) {
+        if (mc.player == null || target == null || "Off".equals(keepSprintValue.getString())) {
+            return;
+        }
+
+        if ("Vanilla".equals(keepSprintValue.getString())) {
+            event.setReduce(1.0D);
+            event.setSprint(true);
+        } else if ("Prediction".equals(keepSprintValue.getString())) {
+            event.setSprint(true);
+        }
     }
 
-    private boolean isClientUser(Entity entity) {
-        return mc.player != null && entity instanceof PlayerEntity player
-            && player.getUuid().equals(mc.player.getUuid());
+    private void onRespawn(PlayerRespawnEvent event) {
+        if (autoDisable.getBoolean()) {
+            setEnabled(false);
+        }
+    }
+
+    private void onRender(Render3DEvent event) {
+        if ("Off".equals(esp.getString()) || targets == null || targets.isEmpty()) {
+            return;
+        }
+        if (mc.player == null || mc.world == null || mc.gameRenderer == null || mc.gameRenderer.getCamera() == null) {
+            return;
+        }
+
+        renderTargetBoxes();
     }
 
     public List<Entity> getTargets() {
@@ -422,30 +228,253 @@ public class KillAura extends Module {
         return target;
     }
 
+    public boolean hasTarget() {
+        return target != null;
+    }
+
+    public boolean isBlocking() {
+        return blocking;
+    }
+
+    public boolean wasOnGroundBeforeAttack() {
+        return wasOnGroundBeforeAttack;
+    }
+
+    public List<Entity> getTargets(double range) {
+        return getTargets(range, "Distance");
+    }
+
+    public List<Entity> getTargets(double range, String sortMode) {
+        if (mc.player == null || mc.world == null) {
+            return new ArrayList<>();
+        }
+
+        double rangeSq = range * range;
+        Box searchBox = mc.player.getBoundingBox().expand(range);
+        Comparator<Entity> comparator = comparator(sortMode);
+
+        return mc.world.getOtherEntities(mc.player, searchBox, this::filter)
+                .stream()
+                .filter(entity -> {
+                    double distance = getAABBDistance(entity);
+                    return distance * distance <= rangeSq;
+                })
+                .sorted(comparator)
+                .collect(Collectors.toList());
+    }
+
     public boolean filter(Entity entity) {
         if (!(entity instanceof LivingEntity living)) {
             return false;
         }
-        return entity != mc.player
-            && !entity.isRemoved()
-            && living.isAlive()
-            && !living.isSpectator()
-            && !AntiBots.isBot(entity)
-            && isTargetEnabled(entity)
-            && !Teams.isSameTeam(entity)
-            && !FriendManager.isFriend(entity)
-            && !isClientUser(entity);
+        if (entity == mc.player || entity.isRemoved() || !living.isAlive() || living.isSpectator()) {
+            return false;
+        }
+        if (Teams.isSameTeam(entity) || FriendManager.isFriend(entity) || ClientFriendModule.isUser(entity)) {
+            return false;
+        }
+        if (AntiBots.isBot(entity)) {
+            return false;
+        }
+
+        Target targetModule = ModuleManager.INSTANCE.getByClass(Target.class);
+        return targetModule == null || targetModule.isTarget(entity);
     }
 
-    private void onRender(Render3DEvent event) {
-        if (mc.player == null || mc.world == null || targets == null || targets.isEmpty()) {
-            return;
+    private Comparator<Entity> comparator(String sortMode) {
+        if ("Health".equalsIgnoreCase(sortMode)) {
+            return Comparator.comparingDouble(entity -> entity instanceof LivingEntity living ? living.getHealth() : getAABBDistance(entity));
         }
-        if (mc.gameRenderer == null || mc.gameRenderer.getCamera() == null) {
+        if ("Armor".equalsIgnoreCase(sortMode)) {
+            return Comparator.comparingDouble(entity -> entity instanceof PlayerEntity player ? getPlayerArmorScore(player) : getAABBDistance(entity));
+        }
+        if ("Baby".equalsIgnoreCase(sortMode)) {
+            return Comparator.comparingDouble(entity -> entity instanceof LivingEntity living && living.isBaby() ? 0.0D : getAABBDistance(entity));
+        }
+        return Comparator.comparingDouble(this::getAABBDistance);
+    }
+
+    private float getPlayerArmorScore(PlayerEntity player) {
+        float score = 0.0F;
+        for (ItemStack stack : player.getInventory().armor) {
+            if (stack != null && stack.getItem() instanceof ArmorItem) {
+                score += armorDefense(stack);
+            }
+        }
+        return score;
+    }
+
+    private float armorDefense(ItemStack stack) {
+        if (stack.isOf(Items.LEATHER_HELMET) || stack.isOf(Items.LEATHER_BOOTS)
+                || stack.isOf(Items.GOLDEN_HELMET) || stack.isOf(Items.GOLDEN_BOOTS)
+                || stack.isOf(Items.CHAINMAIL_BOOTS)) {
+            return 1.0F;
+        }
+        if (stack.isOf(Items.LEATHER_LEGGINGS) || stack.isOf(Items.GOLDEN_LEGGINGS)
+                || stack.isOf(Items.CHAINMAIL_HELMET) || stack.isOf(Items.IRON_HELMET)
+                || stack.isOf(Items.IRON_BOOTS) || stack.isOf(Items.DIAMOND_HELMET)
+                || stack.isOf(Items.DIAMOND_BOOTS) || stack.isOf(Items.NETHERITE_HELMET)
+                || stack.isOf(Items.NETHERITE_BOOTS) || stack.isOf(Items.TURTLE_HELMET)) {
+            return 2.0F;
+        }
+        if (stack.isOf(Items.LEATHER_CHESTPLATE) || stack.isOf(Items.GOLDEN_CHESTPLATE)
+                || stack.isOf(Items.CHAINMAIL_LEGGINGS)) {
+            return 3.0F;
+        }
+        if (stack.isOf(Items.CHAINMAIL_CHESTPLATE) || stack.isOf(Items.IRON_LEGGINGS)) {
+            return 5.0F;
+        }
+        if (stack.isOf(Items.IRON_CHESTPLATE) || stack.isOf(Items.DIAMOND_LEGGINGS)
+                || stack.isOf(Items.NETHERITE_LEGGINGS)) {
+            return 6.0F;
+        }
+        if (stack.isOf(Items.DIAMOND_CHESTPLATE) || stack.isOf(Items.NETHERITE_CHESTPLATE)) {
+            return 8.0F;
+        }
+        return 0.0F;
+    }
+
+    private void updateSwitchTarget() {
+        if (targets.isEmpty()) {
+            target = null;
             return;
         }
 
-        renderTargetBoxes();
+        long now = System.currentTimeMillis();
+        long delay = Math.max(1L, Math.round(switchDelay.getDouble())) * 50L;
+        if (target == null || now - lastSwitchTime >= delay) {
+            switchIndex = (switchIndex + 1) % targets.size();
+            lastSwitchTime = now;
+        }
+
+        if (switchIndex >= targets.size()) {
+            switchIndex = 0;
+        }
+        target = targets.get(switchIndex);
+    }
+
+    private boolean rotateTo(Entity target, double range) {
+        Vec2f targetRotation = ToolManager.INSTANCE.RAY_CAST.calculateAdaptive(target, range);
+        if (targetRotation == null) {
+            targetRotation = ToolManager.INSTANCE.ROTATION.calculate(target);
+            ToolManager.INSTANCE.ROTATION.setServerRotation(targetRotation, 180.0D);
+            return false;
+        }
+
+        ToolManager.INSTANCE.ROTATION.setServerRotation(targetRotation, 180.0D, rotation -> {
+            HitResult result = ToolManager.INSTANCE.RAY_CAST.rayCast(rotation, range, 0.0F);
+            return result instanceof EntityHitResult entityHitResult && entityHitResult.getEntity().equals(target);
+        });
+        return true;
+    }
+
+    private void tryAttack(Entity currentTarget, double range, double wallRange) {
+        if (currentTarget == null || targets.isEmpty()) {
+            return;
+        }
+
+        Vec2f serverRotation = ToolManager.INSTANCE.ROTATION.isServerRotationActive()
+                ? ToolManager.INSTANCE.ROTATION.getServerRotation()
+                : new Vec2f(mc.player.getYaw(), mc.player.getPitch());
+
+        if (mc.crosshairTarget instanceof EntityHitResult hit
+                && filter(hit.getEntity())
+                && getAABBDistance(hit.getEntity()) <= range) {
+            attack(hit.getEntity());
+        }
+
+        HitResult throughWallResult = ToolManager.INSTANCE.RAY_CAST.rayCastEntity(serverRotation, wallRange, 0.0F, true);
+        if (isAttackableRayHit(throughWallResult, currentTarget)) {
+            attack(((EntityHitResult) throughWallResult).getEntity());
+            return;
+        }
+
+        HitResult visibleResult = ToolManager.INSTANCE.RAY_CAST.rayCast(serverRotation, range, 0.0F);
+        if (isAttackableRayHit(visibleResult, currentTarget)) {
+            attack(((EntityHitResult) visibleResult).getEntity());
+            return;
+        }
+
+        HitResult expandedResult = ToolManager.INSTANCE.RAY_CAST.rayCastEntity(serverRotation, range, 1.0F, false);
+        if (isAttackableRayHit(expandedResult, currentTarget)) {
+            attack(((EntityHitResult) expandedResult).getEntity());
+            return;
+        }
+
+        if (mc.crosshairTarget instanceof EntityHitResult hit
+                && hit.getEntity() == currentTarget
+                && getAABBDistance(hit.getEntity()) <= range) {
+            attack(currentTarget);
+        }
+    }
+
+    private boolean isAttackableRayHit(HitResult result, Entity currentTarget) {
+        if (!(result instanceof EntityHitResult entityHitResult)) {
+            return false;
+        }
+
+        Entity hitEntity = entityHitResult.getEntity();
+        return hitEntity == currentTarget || (filter(hitEntity) && "Switch".equals(mode.getString()));
+    }
+
+    public void attack(Entity target) {
+        if (target == null || mc.player == null || mc.interactionManager == null) {
+            return;
+        }
+        if (System.currentTimeMillis() - lastAttackTime < cpsDelay) {
+            return;
+        }
+
+        if ("Prediction".equals(keepSprintValue.getString()) && mc.player.isSprinting() && keepSprintTick == 0) {
+            pendingStopSprint = true;
+            delayedTarget = target;
+            keepSprintTick = 2;
+            return;
+        }
+
+        executeAttack(target);
+    }
+
+    private void executeAttack(Entity target) {
+        if (target == null || mc.player == null || mc.interactionManager == null) {
+            return;
+        }
+        if (getAABBDistance(target) > attackRange.getDouble()) {
+            return;
+        }
+
+        wasOnGroundBeforeAttack = mc.player.isOnGround();
+        mc.interactionManager.attackEntity(mc.player, target);
+        mc.player.swingHand(Hand.MAIN_HAND);
+        resetCPS();
+    }
+
+    public void resetCPS() {
+        double min = Math.min(minAps.getDouble(), maxAps.getDouble());
+        double max = Math.max(minAps.getDouble(), maxAps.getDouble());
+        double aps = min == max ? min : ThreadLocalRandom.current().nextDouble(min, max);
+        cpsDelay = (long) (1000.0D / Math.max(1.0D, aps));
+        lastAttackTime = System.currentTimeMillis();
+    }
+
+    public void markAttackTimerNow() {
+        lastAttackTime = System.currentTimeMillis();
+        if (mc.player != null) {
+            wasOnGroundBeforeAttack = mc.player.isOnGround();
+        }
+    }
+
+    private double getAABBDistance(Entity entity) {
+        if (mc.player == null || entity == null) {
+            return Double.MAX_VALUE;
+        }
+
+        Vec3d eye = mc.player.getEyePos();
+        Box box = entity.getBoundingBox();
+        double x = MathHelper.clamp(eye.x, box.minX, box.maxX);
+        double y = MathHelper.clamp(eye.y, box.minY, box.maxY);
+        double z = MathHelper.clamp(eye.z, box.minZ, box.maxZ);
+        return eye.distanceTo(new Vec3d(x, y, z));
     }
 
     private void renderTargetBoxes() {
@@ -456,15 +485,15 @@ public class KillAura extends Module {
         RenderSystem.enableBlend();
         RenderSystem.defaultBlendFunc();
         RenderSystem.disableCull();
-        RenderSystem.lineWidth(2.0F);
+        RenderSystem.lineWidth("Box".equals(esp.getString()) ? 2.0F : 1.0F);
 
-        Matrix4fStack mvStack = RenderSystem.getModelViewStack();
-        mvStack.pushMatrix();
-        mvStack.identity();
+        Matrix4fStack modelView = RenderSystem.getModelViewStack();
+        modelView.pushMatrix();
+        modelView.identity();
 
-        Quaternionf camRot = camera.getRotation();
-        Quaternionf invRot = new Quaternionf(camRot).conjugate();
-        mvStack.rotate(camRot);
+        Quaternionf cameraRotation = camera.getRotation();
+        Quaternionf inverseRotation = new Quaternionf(cameraRotation).conjugate();
+        modelView.rotate(cameraRotation);
 
         VertexConsumerProvider.Immediate providers = mc.getBufferBuilders().getEntityVertexConsumers();
         VertexConsumer lines = providers.getBuffer(RenderLayer.LINES);
@@ -476,51 +505,57 @@ public class KillAura extends Module {
             }
 
             Vec3d entityPos = entity.getPos();
-            Vector3f relVec = new Vector3f(
-                (float) (entityPos.x - camPos.x),
-                (float) (entityPos.y - camPos.y),
-                (float) (entityPos.z - camPos.z)
+            Vector3f relative = new Vector3f(
+                    (float) (entityPos.x - camPos.x),
+                    (float) (entityPos.y - camPos.y),
+                    (float) (entityPos.z - camPos.z)
             );
-            relVec.rotate(invRot);
+            relative.rotate(inverseRotation);
 
             matrices.push();
-            matrices.translate(relVec.x(), relVec.y(), relVec.z());
+            matrices.translate(relative.x(), relative.y(), relative.z());
 
             Box box = entity.getBoundingBox().offset(-entityPos.x, -entityPos.y, -entityPos.z);
-
-            // 当前目标用红色，其他用绿色
-            Color color = entity.equals(target) ? new Color(255, 50, 50, 150) : new Color(50, 255, 50, 80);
-
-            VertexRendering.drawBox(
-                matrices,
-                lines,
-                box,
-                color.getRed() / 255.0F,
-                color.getGreen() / 255.0F,
-                color.getBlue() / 255.0F,
-                color.getAlpha() / 255.0F
-            );
+            int alpha = "Box".equals(esp.getString()) ? 60 : "Around".equals(esp.getString()) ? 45 : 35;
+            float red = entity.equals(target) ? 200.0F / 255.0F : 0.0F;
+            float green = entity.equals(target) ? 0.0F : 200.0F / 255.0F;
+            float blue = 0.0F;
+            float opacity = alpha / 255.0F;
+            VertexRendering.drawBox(matrices, lines, box, red, green, blue, opacity);
 
             matrices.pop();
         }
 
         providers.draw(RenderLayer.LINES);
-        mvStack.popMatrix();
+        modelView.popMatrix();
         RenderSystem.lineWidth(1.0F);
         RenderSystem.enableDepthTest();
         RenderSystem.disableBlend();
         RenderSystem.enableCull();
     }
 
+    private void resetState() {
+        if (targets != null) {
+            targets.clear();
+        }
+        target = null;
+        delayedTarget = null;
+        keepSprintTick = 0;
+        pendingStopSprint = false;
+        blocking = false;
+        switchIndex = 0;
+        lastSwitchTime = 0L;
+        wasOnGroundBeforeAttack = false;
+    }
+
+    private <T extends Module> boolean isModuleEnabled(Class<T> moduleClass) {
+        T module = ModuleManager.INSTANCE.getByClass(moduleClass);
+        return module != null && module.isEnabled();
+    }
+
     private static Setting<Double> rangedDouble(String name, String description, double defaultValue, double min, double max, double step) {
         Setting<Double> setting = new Setting<>(name, description, defaultValue);
         setting.setRange(min, max, step);
-        return setting;
-    }
-
-    private static Setting<Integer> rangedInt(String name, String description, int defaultValue, int min, int max, int step) {
-        Setting<Integer> setting = new Setting<>(name, description, defaultValue);
-        setting.setRange((double) min, (double) max, (double) step);
         return setting;
     }
 }

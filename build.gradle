@@ -42,6 +42,11 @@ dependencies {
     // NanoVG
     implementation "org.lwjgl:lwjgl-nanovg:3.3.3"
     implementation "org.lwjgl:lwjgl-nanovg:3.3.3:natives-windows"
+
+    // Skia
+    implementation "io.github.humbleui:types:0.2.0"
+    implementation "io.github.humbleui:skija-shared:0.116.4"
+    implementation "io.github.humbleui:skija-windows-x64:0.116.4"
 }
 
 processResources {

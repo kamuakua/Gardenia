@@ -86,6 +86,10 @@ public class CriticalsModule extends Module {
         return mode.getString();
     }
 
+    public boolean isPacketMode() {
+        return "Packet".equals(mode.getString());
+    }
+
     public static PlayerInput handleMoveInput(PlayerInput input) {
         if (INSTANCE == null || !INSTANCE.isEnabled()) {
             return input;

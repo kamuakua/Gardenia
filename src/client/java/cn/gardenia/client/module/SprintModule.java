@@ -1,37 +1,39 @@
 package cn.gardenia.client.module;
 
-import cn.gardenia.client.event.EventBus;
-import cn.gardenia.client.event.EventPhase;
-import cn.gardenia.client.event.events.player.PlayerTickEvent;
+import cn.gardenia.client.event.events.movement.PlayerMotionEvent;
+import cn.gardenia.client.module.misc.NewInvManagerModule;
+
 import java.util.function.Consumer;
 
 public class SprintModule extends Module {
-    private final Consumer<PlayerTickEvent> tickListener;
+    private final Consumer<PlayerMotionEvent> motionListener = this::onMotion;
 
     public SprintModule() {
-        super("Sprint", "Auto-sprint when moving forward", Category.PLAYER);
-        this.tickListener = this::onPlayerTick;
+        super("Sprint", "Automatically sprints", Category.MOVEMENT);
     }
 
     @Override
     public void onEnable() {
-        subscribe(PlayerTickEvent.class, tickListener);
+        subscribe(PlayerMotionEvent.class, motionListener);
     }
 
     @Override
     public void onDisable() {
-        unsubscribe(PlayerTickEvent.class, tickListener);
-    }
-
-    private void onPlayerTick(PlayerTickEvent event) {
-        if (!event.isPre()) return;
-        if (mc.player == null) return;
-        if (mc.player.forwardSpeed > 0 && !mc.player.horizontalCollision) {
-            mc.player.setSprinting(true);
+        unsubscribe(PlayerMotionEvent.class, motionListener);
+        if (mc.options != null) {
+            mc.options.sprintKey.setPressed(false);
         }
     }
 
-    @Override
-    public void onTick() {
+    private void onMotion(PlayerMotionEvent event) {
+        if (!event.isPre() || mc.options == null) {
+            return;
+        }
+        if (NewInvManagerModule.isSuppressingSprint()) {
+            mc.options.sprintKey.setPressed(false);
+            return;
+        }
+        mc.options.sprintKey.setPressed(true);
+        mc.options.getSprintToggled().setValue(false);
     }
 }

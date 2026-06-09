@@ -3,6 +3,7 @@ package cn.gardenia.mixin.client.entity;
 import cn.gardenia.client.event.EventBus;
 import cn.gardenia.client.event.events.attack.AttackSlowdownEvent;
 import cn.gardenia.client.event.events.entity.EntityRemoveEvent;
+import cn.gardenia.client.event.events.movement.StayingOnGroundSurfaceEvent;
 import cn.gardenia.client.module.combat.Velocity;
 import net.minecraft.entity.Entity;
 import net.minecraft.entity.player.PlayerEntity;
@@ -50,6 +51,8 @@ public class PlayerEntityMixin {
 
     @Inject(method = "clipAtLedge", at = @At("RETURN"), cancellable = true)
     private void onClipAtLedge(CallbackInfoReturnable<Boolean> cir) {
-        cir.setReturnValue(Velocity.handleStayingOnGroundSurface(cir.getReturnValue()));
+        StayingOnGroundSurfaceEvent event = new StayingOnGroundSurfaceEvent(cir.getReturnValue());
+        EventBus.INSTANCE.post(event);
+        cir.setReturnValue(Velocity.handleStayingOnGroundSurface(event.shouldStay()));
     }
 }

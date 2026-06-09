@@ -226,7 +226,7 @@ public class RotationTool {
             if (raycast != null && (Math.abs(target.x - rotations.x) > 5.0F || Math.abs(target.y - rotations.y) > 5.0F)) {
                 target = applyRaycastOffset(target, raycast);
             }
-            rotations = smoothNaven(lastRotations, target, rotationSpeed);
+            rotations = smoothGardenia(lastRotations, target, rotationSpeed);
         }
         smoothed = true;
     }
@@ -487,7 +487,7 @@ public class RotationTool {
         return new Vec2f(moveYaw, movePitch);
     }
 
-    private Vec2f smoothNaven(Vec2f lastRotation, Vec2f targetRotation, double speed) {
+    private Vec2f smoothGardenia(Vec2f lastRotation, Vec2f targetRotation, double speed) {
         if (lastRotation == null || targetRotation == null) {
             return targetRotation;
         }

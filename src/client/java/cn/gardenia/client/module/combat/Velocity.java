@@ -10,6 +10,7 @@ import cn.gardenia.client.gui.theme.Theme;
 import cn.gardenia.client.module.Category;
 import cn.gardenia.client.module.Module;
 import cn.gardenia.client.module.Setting;
+import net.minecraft.util.math.MathHelper;
 import net.minecraft.network.listener.PacketListener;
 import net.minecraft.network.packet.Packet;
 import net.minecraft.network.packet.s2c.common.CommonPingS2CPacket;
@@ -21,7 +22,6 @@ import net.minecraft.network.packet.s2c.play.LookAtS2CPacket;
 import net.minecraft.network.packet.s2c.play.PlayerPositionLookS2CPacket;
 import net.minecraft.network.packet.s2c.play.PlayerRespawnS2CPacket;
 import net.minecraft.util.PlayerInput;
-import net.minecraft.util.math.MathHelper;
 
 import java.util.Queue;
 import java.util.concurrent.ConcurrentLinkedQueue;
@@ -35,14 +35,16 @@ public class Velocity extends Module {
     private final Setting<Double> alinkTime = rangedDouble("MaxAlinkTime (ms)", "Maximum link time for NoXZ mode", 5000.0, 50.0, 10000.0, 50.0);
 
     private final Queue<Packet<?>> packets = new ConcurrentLinkedQueue<>();
-    private final SmoothProgress progress = new SmoothProgress(0.0F, 0.2F);
     private final Consumer<GlobalPacketEvent> packetListener = this::onPacket;
     private final Consumer<PlayerTickEvent> tickListener = this::onPreTick;
+    private final Consumer<StayingOnGroundSurfaceEvent> stayingListener = this::onStayingOnGround;
     private final Consumer<RenderHudEvent> renderListener = this::onRender;
 
     private boolean lag;
     private boolean jump;
     private int aliveTicks;
+    private float progressValue;
+    private float progressTarget;
     private VelocityStage stage = VelocityStage.NONE;
 
     public Velocity() {
@@ -57,12 +59,17 @@ public class Velocity extends Module {
         return false;
     }
 
+    public boolean isDelayingVelocity() {
+        return stage == VelocityStage.DELAY || stage == VelocityStage.LAG;
+    }
+
     @Override
     public void onEnable() {
         INSTANCE = this;
         reset();
         subscribe(GlobalPacketEvent.class, packetListener);
         subscribe(PlayerTickEvent.class, tickListener);
+        subscribe(StayingOnGroundSurfaceEvent.class, stayingListener);
         subscribe(RenderHudEvent.class, renderListener);
     }
 
@@ -70,6 +77,7 @@ public class Velocity extends Module {
     public void onDisable() {
         unsubscribe(GlobalPacketEvent.class, packetListener);
         unsubscribe(PlayerTickEvent.class, tickListener);
+        unsubscribe(StayingOnGroundSurfaceEvent.class, stayingListener);
         unsubscribe(RenderHudEvent.class, renderListener);
         reset();
         clear(true);
@@ -83,12 +91,7 @@ public class Velocity extends Module {
     }
 
     public static boolean handleStayingOnGroundSurface(boolean stay) {
-        if (INSTANCE == null || !INSTANCE.isEnabled()) {
-            return stay;
-        }
-        StayingOnGroundSurfaceEvent event = new StayingOnGroundSurfaceEvent(stay);
-        INSTANCE.onStayingOnGround(event);
-        return event.shouldStay();
+        return stay;
     }
 
     private void onPacket(GlobalPacketEvent event) {
@@ -152,9 +155,9 @@ public class Velocity extends Module {
 
         String curMode = mode.getString();
         if (curMode.equals("Reduce") && stage == VelocityStage.DELAY) {
-            progress.target = MathHelper.clamp((float) aliveTicks / 20.0F * 100.0F, 0.0F, 100.0F);
+            progressTarget = MathHelper.clamp((float) aliveTicks / 20.0F * 100.0F, 0.0F, 100.0F);
         } else {
-            progress.target = 0.0F;
+            progressTarget = 0.0F;
         }
 
         if (stage == VelocityStage.DELAY || stage == VelocityStage.LAG) {
@@ -179,6 +182,43 @@ public class Velocity extends Module {
                 stage = VelocityStage.NONE;
                 aliveTicks = 0;
             }
+        }
+    }
+
+    private void onRender(RenderHudEvent event) {
+        if (stage == VelocityStage.NONE && progressValue < 0.1F) {
+            return;
+        }
+
+        updateProgress(true);
+        float width = 100.0F;
+        float height = 5.0F;
+        float screenWidth = mc.getWindow().getScaledWidth();
+        float screenHeight = mc.getWindow().getScaledHeight();
+        float x = screenWidth / 2.0F - width / 2.0F;
+        float y = screenHeight / 2.0F + 15.0F;
+        float progressWidth = MathHelper.clamp(progressValue, 0.0F, width);
+
+        boolean startedFrame = false;
+        if (!NanoVGManager.INSTANCE.isFrameActive()) {
+            if (!NanoVGManager.INSTANCE.isInitialized()) {
+                NanoVGManager.INSTANCE.init();
+            }
+            NanoVGManager.INSTANCE.beginFrame(
+                    mc.getWindow().getScaledWidth(),
+                    mc.getWindow().getScaledHeight(),
+                    (float) mc.getWindow().getScaleFactor()
+            );
+            startedFrame = true;
+        }
+
+        NanoVGRender.drawRoundedRect(x, y, width, height, 2.0F, 0x6E000000);
+        if (progressValue > 0.1F) {
+            NanoVGRender.drawRoundedRect(x, y, progressWidth, height, 2.0F, hudSyncColor());
+        }
+
+        if (startedFrame) {
+            NanoVGManager.INSTANCE.endFrame();
         }
     }
 
@@ -224,49 +264,6 @@ public class Velocity extends Module {
                 || mc.options.backKey.isPressed();
     }
 
-    private void onRender(RenderHudEvent event) {
-        if (stage == VelocityStage.NONE && progress.value < 0.1F) {
-            return;
-        }
-
-        progress.update();
-        float width = 100.0F;
-        float height = 5.0F;
-        float screenWidth = mc.getWindow().getScaledWidth();
-        float screenHeight = mc.getWindow().getScaledHeight();
-        float x = screenWidth / 2.0F - width / 2.0F;
-        float y = screenHeight / 2.0F + 15.0F;
-        float progressWidth = MathHelper.clamp(progress.value, 0.0F, width);
-
-        boolean startedFrame = false;
-        if (!NanoVGManager.INSTANCE.isFrameActive()) {
-            if (!NanoVGManager.INSTANCE.isInitialized()) {
-                NanoVGManager.INSTANCE.init();
-            }
-            NanoVGManager.INSTANCE.beginFrame(
-                    mc.getWindow().getScaledWidth(),
-                    mc.getWindow().getScaledHeight(),
-                    (float) mc.getWindow().getScaleFactor()
-            );
-            startedFrame = true;
-        }
-
-        NanoVGRender.drawRoundedRect(x, y, width, height, 2.0F, 0x6E000000);
-        if (progress.value > 0.1F) {
-            NanoVGRender.drawRoundedRect(x, y, progressWidth, height, 2.0F, hudSyncColor());
-        }
-
-        if (startedFrame) {
-            NanoVGManager.INSTANCE.endFrame();
-        }
-    }
-
-    private int hudSyncColor() {
-        float phase = (System.currentTimeMillis() / 20L) % 50L;
-        float t = phase <= 25.0F ? phase / 25.0F : (50.0F - phase) / 25.0F;
-        return Theme.blend(Theme.ACCENT, Theme.ACCENT_HOVER, t);
-    }
-
     public void clear(boolean handle) {
         lag = false;
         if (!handle) {
@@ -288,8 +285,25 @@ public class Velocity extends Module {
         aliveTicks = 0;
         stage = VelocityStage.NONE;
         packets.clear();
-        progress.value = 0.0F;
-        progress.target = 0.0F;
+        progressValue = 0.0F;
+        progressTarget = 0.0F;
+    }
+
+    private void updateProgress(boolean forward) {
+        if (!forward) {
+            return;
+        }
+        if (Math.abs(progressTarget - progressValue) < 0.1F) {
+            progressValue = progressTarget;
+            return;
+        }
+        progressValue += (progressTarget - progressValue) * 0.2F;
+    }
+
+    private int hudSyncColor() {
+        float phase = (System.currentTimeMillis() / 20L) % 50L;
+        float t = phase <= 25.0F ? phase / 25.0F : (50.0F - phase) / 25.0F;
+        return Theme.blend(Theme.ACCENT, Theme.ACCENT_HOVER, t);
     }
 
     @SuppressWarnings({"rawtypes", "unchecked"})
@@ -309,19 +323,4 @@ public class Velocity extends Module {
         LAG
     }
 
-    private static class SmoothProgress {
-        private float value;
-        private float target;
-        private final float speed;
-
-        private SmoothProgress(float value, float speed) {
-            this.value = value;
-            this.target = value;
-            this.speed = speed;
-        }
-
-        private void update() {
-            value += (target - value) * speed;
-        }
-    }
 }

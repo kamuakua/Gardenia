@@ -4,6 +4,7 @@ import cn.gardenia.client.module.Category;
 import cn.gardenia.client.module.Module;
 import cn.gardenia.client.module.Setting;
 import cn.gardenia.client.event.events.player.PlayerTickEvent;
+import cn.gardenia.mixin.client.MinecraftClientAccessor;
 import java.util.function.Consumer;
 
 public class FastPlaceModule extends Module {
@@ -42,6 +43,7 @@ public class FastPlaceModule extends Module {
 
         placeTicks++;
         if (placeTicks >= delay.getInt()) {
+            ((MinecraftClientAccessor) mc).gardenia$setRightClickDelay(0);
             placeTicks = 0;
         }
     }

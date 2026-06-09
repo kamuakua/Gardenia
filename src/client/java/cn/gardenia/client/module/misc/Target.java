@@ -19,9 +19,9 @@ import net.minecraft.entity.player.PlayerEntity;
 public class Target extends Module {
     private final Setting<Boolean> player = new Setting<>("Player", "Target players", true);
     private final Setting<Boolean> invisibles = new Setting<>("Invisibles", "Target invisible living entities", true);
-    private final Setting<Boolean> animals = new Setting<>("Animals", "Target animals", true);
-    private final Setting<Boolean> mobs = new Setting<>("Mobs", "Target mobs", true);
-    private final Setting<Boolean> villager = new Setting<>("Villager", "Target villagers", true);
+    private final Setting<Boolean> animals = new Setting<>("Animals", "Target animals", false);
+    private final Setting<Boolean> mobs = new Setting<>("Mobs", "Target mobs", false);
+    private final Setting<Boolean> villager = new Setting<>("Villager", "Target villagers", false);
 
     public Target() {
         super("Target", "Target selector", Category.MISC);
