@@ -28,8 +28,8 @@ public class ClientPlayerEntityMixin {
 
     @Inject(method = "tick", at = @At("HEAD"))
     private void onPreTick(CallbackInfo ci) {
-        ToolManager.INSTANCE.ROTATION.tickServerRotation();
         EventBus.INSTANCE.post(new PlayerTickEvent(EventPhase.PRE));
+        ToolManager.INSTANCE.ROTATION.tickServerRotation();
     }
 
     @Inject(method = "tick", at = @At("TAIL"))

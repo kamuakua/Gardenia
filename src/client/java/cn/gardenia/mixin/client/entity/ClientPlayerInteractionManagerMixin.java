@@ -76,10 +76,10 @@ public class ClientPlayerInteractionManagerMixin {
     }
 
     @Redirect(
-            method = "interactItem",
+            method = {"interactItem", "interactBlock"},
             at = @At(value = "INVOKE", target = "Lnet/minecraft/client/network/ClientPlayerInteractionManager;sendSequencedPacket(Lnet/minecraft/client/world/ClientWorld;Lnet/minecraft/client/network/SequencedPacketCreator;)V")
     )
-    private void onInteractItemPacket(ClientPlayerInteractionManager instance, ClientWorld world, SequencedPacketCreator packetCreator) {
+    private void onInteractPacket(ClientPlayerInteractionManager instance, ClientWorld world, SequencedPacketCreator packetCreator) {
         PendingUpdateManager manager = ((ClientWorldAccessor) world).gardenia$getPendingUpdateManager();
         try (PendingUpdateManager pendingUpdateManager = manager.incrementSequence()) {
             Packet<?> packet = packetCreator.predict(pendingUpdateManager.getSequence());

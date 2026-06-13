@@ -59,6 +59,7 @@
     "entity.LivingEntityAccessor",
     "entity.LivingEntityMixin",
     "entity.PlayerEntityMixin",
+    "entity.AbstractClientPlayerEntityMixin",
     "entity.ClientPlayerEntityMixin",
     "entity.OtherClientPlayerEntityMixin",
     "entity.ClientPlayNetworkHandlerMixin",

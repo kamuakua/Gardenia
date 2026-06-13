@@ -213,6 +213,7 @@ public class RotationTool {
         rotationSpeed = speed;
         this.raycast = raycast;
         active = true;
+        smoothed = false;
         smooth();
     }
 
@@ -259,8 +260,9 @@ public class RotationTool {
             return rotation;
         }
 
-        ensureState();
-        Vec2f previous = lastRotations != null ? lastRotations : new Vec2f(mc.player.getYaw(), mc.player.getPitch());
+        // 对齐 Naven: GCD 量化锚点是实体上一 tick 的渲染旋转 prevYaw/prevPitch，
+        // 不是平滑状态值 lastRotations。锚点错位会让每包 yaw 步进落在不同量化网格上 → Grim GCD/aim 检测。
+        Vec2f previous = new Vec2f(mc.player.prevYaw, mc.player.prevPitch);
         return applySensitivityPatch(rotation, previous);
     }
 
@@ -447,23 +449,6 @@ public class RotationTool {
         if (rotations == null) rotations = current;
         if (lastRotations == null) lastRotations = current;
         if (targetRotations == null) targetRotations = current;
-    }
-
-    private Vec2f smooth(Vec2f from, Vec2f to, double speed) {
-        return smooth(from, to, speed, null);
-    }
-
-    private Vec2f smooth(Vec2f from, Vec2f to, double speed, Predicate<Vec2f> raycast) {
-        if (from == null || to == null || speed >= 180.0) {
-            if (raycast == null || from == null || to == null || Math.abs(to.x - from.x) <= 5.0F && Math.abs(to.y - from.y) <= 5.0F) {
-                return to;
-            }
-            return applyRaycastOffset(to, raycast);
-        }
-        Vec2f target = raycast == null || Math.abs(to.x - from.x) <= 5.0F && Math.abs(to.y - from.y) <= 5.0F
-                ? to
-                : applyRaycastOffset(to, raycast);
-        return smoothAngle(from, target, (float) speed);
     }
 
     private Vec2f move(Vec2f lastRotation, Vec2f targetRotation, double speed) {

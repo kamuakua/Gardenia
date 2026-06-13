@@ -3,15 +3,26 @@ package cn.gardenia.client.module.move;
 import cn.gardenia.client.event.events.movement.PlayerMotionEvent;
 import cn.gardenia.client.event.events.network.GlobalPacketEvent;
 import cn.gardenia.client.event.events.player.PlayerTickEvent;
+import cn.gardenia.client.event.events.render.Render3DEvent;
+import cn.gardenia.client.event.events.render.RenderHudEvent;
+import cn.gardenia.client.event.events.render.UpdateFovEvent;
+import cn.gardenia.client.gui.nanovg.NanoVGManager;
+import cn.gardenia.client.gui.nanovg.NanoVGRender;
 import cn.gardenia.client.module.Category;
 import cn.gardenia.client.module.Module;
 import cn.gardenia.client.module.ModuleManager;
 import cn.gardenia.client.module.Setting;
 import cn.gardenia.client.tool.ToolManager;
+import com.mojang.blaze3d.systems.RenderSystem;
 import net.minecraft.block.*;
+import net.minecraft.client.render.Camera;
+import net.minecraft.client.render.RenderLayer;
+import net.minecraft.client.render.VertexConsumer;
+import net.minecraft.client.render.VertexConsumerProvider;
+import net.minecraft.client.render.VertexRendering;
+import net.minecraft.client.util.math.MatrixStack;
 import net.minecraft.item.BlockItem;
 import net.minecraft.item.ItemStack;
-import net.minecraft.item.Items;
 import net.minecraft.network.packet.c2s.play.UpdateSelectedSlotC2SPacket;
 import net.minecraft.network.packet.s2c.play.EntityVelocityUpdateS2CPacket;
 import net.minecraft.util.ActionResult;
@@ -21,6 +32,9 @@ import net.minecraft.util.hit.BlockHitResult;
 import net.minecraft.util.hit.HitResult;
 import net.minecraft.util.math.*;
 import net.minecraft.world.RaycastContext;
+import org.joml.Matrix4fStack;
+import org.joml.Quaternionf;
+import org.joml.Vector3f;
 
 import java.util.Arrays;
 import java.util.List;
@@ -39,9 +53,9 @@ public class ScaffoldModule extends Module {
     };
 
     private static final List<Block> BLOCK_BLACKLIST = Arrays.asList(
-            Blocks.AIR, Blocks.WATER, Blocks.LAVA, Blocks.ENCHANTING_TABLE, Blocks.GLASS_PANE,
+            Blocks.AIR, Blocks.WATER, Blocks.LAVA, Blocks.ENCHANTING_TABLE, Blocks.GLASS_PANE, Blocks.GLASS_PANE,
             Blocks.IRON_BARS, Blocks.SNOW, Blocks.COAL_ORE, Blocks.DIAMOND_ORE, Blocks.EMERALD_ORE,
-            Blocks.CHEST, Blocks.TRAPPED_CHEST, Blocks.TORCH, Blocks.ANVIL, Blocks.NOTE_BLOCK,
+            Blocks.CHEST, Blocks.TRAPPED_CHEST, Blocks.TORCH, Blocks.ANVIL, Blocks.TRAPPED_CHEST, Blocks.NOTE_BLOCK,
             Blocks.JUKEBOX, Blocks.TNT, Blocks.GOLD_ORE, Blocks.IRON_ORE, Blocks.LAPIS_ORE,
             Blocks.STONE_PRESSURE_PLATE, Blocks.LIGHT_WEIGHTED_PRESSURE_PLATE, Blocks.HEAVY_WEIGHTED_PRESSURE_PLATE,
             Blocks.STONE_BUTTON, Blocks.LEVER, Blocks.TALL_GRASS, Blocks.TRIPWIRE, Blocks.TRIPWIRE_HOOK,
@@ -60,6 +74,7 @@ public class ScaffoldModule extends Module {
     private final Setting<Integer> upTellyRotateSpeed = rangedInt("UpTelly Rotation Speed", "Rising rotation speed", 95, 1, 180, 1);
     private final Setting<Integer> upTellyPlaceTicks = rangedInt("UpTelly Place Ticks", "Rising ticks before place", 2, 1, 6, 1);
     private final Setting<Boolean> smartUpTellyRotations = new Setting<>("Smart UpTelly Rotations", "Stage rising rotations", true);
+    private final Setting<Boolean> tellyKeepFov = new Setting<>("Keep Fov", "Keep normal FOV while Telly bridging", true);
     private final Setting<Boolean> safeMode = new Setting<>("Safe Mode", "Prefer nearby safe support target", false);
     private final Setting<Boolean> testOnGround = new Setting<>("Test OnGround", "Allow safe target during jump start", false);
     private final Setting<Boolean> clutch = new Setting<>("Clutch", "Try to clutch while falling", true);
@@ -68,10 +83,18 @@ public class ScaffoldModule extends Module {
     private final Setting<Double> clutchMinY = rangedDouble("Clutch Min Y", "Minimum vertical speed before clutch", -0.5D, -1.0D, 0.0D, 0.1D);
     private final Setting<Boolean> safeWalk = new Setting<>("SafeWalk", "Sneak at block edge in Legit mode", true);
     private final Setting<Double> legitEdgeDistance = rangedDouble("Legit Edge Distance", "SafeWalk edge distance", 0.3D, 0.05D, 0.8D, 0.01D);
+    private final Setting<Boolean> legitKeepFov = new Setting<>("Keep Fov", "Keep normal FOV while Legit scaffolding", true);
+    private final Setting<Boolean> devTest = new Setting<>("Dev Test", "Show scaffold debug speed", false);
+    private final Setting<Double> devTestX = rangedDouble("Dev Test Position X", "Debug display X", 8.0D, 0.0D, 1000.0D, 1.0D);
+    private final Setting<Double> devTestY = rangedDouble("Dev Test Position Y", "Debug display Y", 120.0D, 0.0D, 1000.0D, 1.0D);
+    private final Setting<Boolean> esp = new Setting<>("ESP", "Render current placement target", true);
 
     private final Consumer<PlayerTickEvent> tickListener = this::onTick;
     private final Consumer<PlayerMotionEvent> motionListener = this::onMotion;
     private final Consumer<GlobalPacketEvent> packetListener = this::onPacket;
+    private final Consumer<UpdateFovEvent> fovListener = this::onUpdateFov;
+    private final Consumer<Render3DEvent> render3DListener = this::onRender3D;
+    private final Consumer<RenderHudEvent> renderHudListener = this::onRenderHud;
 
     private int airTick;
     private int bridgeAirTicks;
@@ -90,7 +113,7 @@ public class ScaffoldModule extends Module {
     private BlockPos blockPos;
     private Direction facing;
     private int oldSlot = -1;
-    private boolean pendingJump;
+    private double currentBps;
     private boolean pendingSneak;
 
     private ClutchState clutchState = ClutchState.IDLE;
@@ -112,6 +135,7 @@ public class ScaffoldModule extends Module {
         addSetting(upTellyRotateSpeed);
         addSetting(upTellyPlaceTicks);
         addSetting(smartUpTellyRotations);
+        addSetting(tellyKeepFov);
         addSetting(safeMode);
         addSetting(testOnGround);
         addSetting(clutch);
@@ -120,6 +144,11 @@ public class ScaffoldModule extends Module {
         addSetting(clutchMinY);
         addSetting(safeWalk);
         addSetting(legitEdgeDistance);
+        addSetting(legitKeepFov);
+        addSetting(devTest);
+        addSetting(devTestX);
+        addSetting(devTestY);
+        addSetting(esp);
     }
 
     @Override
@@ -131,6 +160,9 @@ public class ScaffoldModule extends Module {
         subscribe(PlayerTickEvent.class, tickListener);
         subscribe(PlayerMotionEvent.class, motionListener);
         subscribe(GlobalPacketEvent.class, packetListener);
+        subscribe(UpdateFovEvent.class, fovListener);
+        subscribe(Render3DEvent.class, render3DListener);
+        subscribe(RenderHudEvent.class, renderHudListener);
     }
 
     @Override
@@ -138,8 +170,11 @@ public class ScaffoldModule extends Module {
         unsubscribe(PlayerTickEvent.class, tickListener);
         unsubscribe(PlayerMotionEvent.class, motionListener);
         unsubscribe(GlobalPacketEvent.class, packetListener);
+        unsubscribe(UpdateFovEvent.class, fovListener);
+        unsubscribe(Render3DEvent.class, render3DListener);
+        unsubscribe(RenderHudEvent.class, renderHudListener);
         if (mc.player != null && oldSlot >= 0 && oldSlot < 9) {
-            selectSlot(oldSlot);
+            restoreSlot(oldSlot);
         }
         oldSlot = -1;
         resetClutch(true);
@@ -161,10 +196,6 @@ public class ScaffoldModule extends Module {
     private PlayerInput onMoveInput(PlayerInput input) {
         boolean jump = input.jump();
         boolean sneak = input.sneak();
-        if (pendingJump) {
-            jump = true;
-            pendingJump = false;
-        }
         if (isHeypixelMode() && mc.player.isOnGround() && !input.jump() && isMoving(input)) {
             jump = true;
         }
@@ -198,6 +229,64 @@ public class ScaffoldModule extends Module {
         }
     }
 
+    private void onUpdateFov(UpdateFovEvent event) {
+        if (!shouldKeepFov() || mc.options == null) {
+            return;
+        }
+        event.setFov(mc.options.getFov().getValue().floatValue() / 100.0F);
+    }
+
+    private void onRender3D(Render3DEvent event) {
+        if (mc.player == null || mc.world == null || blockPos == null || !esp.getBoolean()) {
+            return;
+        }
+        if (mc.gameRenderer == null || mc.gameRenderer.getCamera() == null) {
+            return;
+        }
+        renderPlacementBox();
+    }
+
+    private void onRenderHud(RenderHudEvent event) {
+        if (!devTest.getBoolean() || mc.player == null) {
+            return;
+        }
+
+        boolean startedFrame = false;
+        if (!NanoVGManager.INSTANCE.isFrameActive()) {
+            if (!NanoVGManager.INSTANCE.isInitialized()) {
+                NanoVGManager.INSTANCE.init();
+            }
+            NanoVGManager.INSTANCE.beginFrame(
+                    mc.getWindow().getScaledWidth(),
+                    mc.getWindow().getScaledHeight(),
+                    (float) mc.getWindow().getScaleFactor()
+            );
+            startedFrame = true;
+        }
+
+        float x = (float) devTestX.getDouble();
+        float y = (float) devTestY.getDouble();
+        float radius = 5.0F;
+        float paddingX = 10.0F;
+        float paddingY = 8.0F;
+        float fontSize = 10.0F;
+        String font = NanoVGManager.INSTANCE.hasFont("chinese") ? "chinese" : "regular";
+        String text = String.format("BPS:%.2f方块/S", currentBps);
+        float textWidth = NanoVGRender.textWidth(text, fontSize, font);
+        float textHeight = 10.0F;
+        float width = textWidth + paddingX * 2.0F;
+        float height = textHeight + paddingY * 2.0F;
+
+        NanoVGRender.drawShadow(x, y, width, height, radius, 8.0F, 0.35F);
+        NanoVGRender.drawRoundedRect(x, y, width, height, radius, 0x3EEBF2FA);
+        NanoVGRender.drawRoundedRectStroke(x, y, width, height, radius, 1.0F, 0x60FFFFFF);
+        NanoVGRender.drawText(text, x + paddingX, y + paddingY + textHeight * 0.78F, 0xEBFFFFFF, fontSize, font);
+
+        if (startedFrame) {
+            NanoVGManager.INSTANCE.endFrame();
+        }
+    }
+
     private void onTick(PlayerTickEvent event) {
         if (mc.player == null || mc.world == null || mc.interactionManager == null || !event.isPre()) {
             return;
@@ -206,6 +295,7 @@ public class ScaffoldModule extends Module {
         if (slot != -1) {
             selectSlot(slot);
         }
+        currentBps = calculateCurrentBps();
         if (velocityDelay > 0) {
             velocityDelay--;
         }
@@ -248,9 +338,8 @@ public class ScaffoldModule extends Module {
         if (mc.player.isOnGround() && !(safeMode.getBoolean() && testOnGround.getBoolean() && jumpHeld && bridgeGroundTicks > 0)) {
             blockPos = null;
             facing = null;
-            ToolManager.INSTANCE.ROTATION.setServerRotation(new Vec2f(mc.player.getYaw(), mc.player.getPitch()), rotateBackSpeed.getInt());
-            if (isMoving()) {
-                pendingJump = true;
+            if (ToolManager.INSTANCE.ROTATION.isServerRotationActive()) {
+                ToolManager.INSTANCE.ROTATION.setServerRotation(new Vec2f(mc.player.getYaw(), mc.player.getPitch()), rotateBackSpeed.getInt());
             }
             return;
         }
@@ -639,7 +728,12 @@ public class ScaffoldModule extends Module {
         if (pos == null || direction == null) {
             return new Vec2f(MathHelper.wrapDegrees(mc.player.getYaw() - 180.0F), 89.64F);
         }
-        Vec2f rotation = onAir() ? ToolManager.INSTANCE.ROTATION.calculate(hitVec(pos, direction)) : ToolManager.INSTANCE.ROTATION.calculate(Vec3d.ofCenter(pos));
+        // 对齐 Naven: onAir 时瞄面表面正中(calculateBlock = 方块中心+faceNormal*0.5),不是 hitVec 内的随机点。
+        // 之前用 calculate(hitVec(...)) 会瞄进方块内部、且每 tick 随机,与 place() 发出的 BlockHitResult 不一致 →
+        // DuplicateRotPlace + AirLiquidPlace。
+        Vec2f rotation = onAir()
+                ? ToolManager.INSTANCE.ROTATION.calculateBlock(pos, direction)
+                : ToolManager.INSTANCE.ROTATION.calculate(Vec3d.ofCenter(pos));
         Vec2f reverseYaw = new Vec2f(MathHelper.wrapDegrees(mc.player.getYaw() - 180.0F), rotation.y);
         return rayHitsBlock(reverseYaw, pos) ? reverseYaw : rotation;
     }
@@ -878,9 +972,6 @@ public class ScaffoldModule extends Module {
         if (stack == null || stack.isEmpty() || !(stack.getItem() instanceof BlockItem blockItem) || stack.getCount() <= 1) {
             return false;
         }
-        if (stack.isOf(Items.SAND) || stack.isOf(Items.GRAVEL)) {
-            return false;
-        }
         String name = stack.getName().getString();
         if (name.contains("Click") || name.contains("点击")) {
             return false;
@@ -889,6 +980,7 @@ public class ScaffoldModule extends Module {
         return !(block instanceof FlowerBlock)
                 && !(block instanceof PlantBlock)
                 && !(block instanceof FungusBlock)
+                && !(block instanceof MushroomPlantBlock)
                 && !(block instanceof CropBlock)
                 && !(block instanceof SlabBlock)
                 && !BLOCK_BLACKLIST.contains(block);
@@ -896,6 +988,16 @@ public class ScaffoldModule extends Module {
 
     private void selectSlot(int slot) {
         if (slot < 0 || slot > 8 || mc.player.getInventory().selectedSlot == slot) {
+            return;
+        }
+        mc.player.getInventory().selectedSlot = slot;
+        if (mc.getNetworkHandler() != null) {
+            mc.getNetworkHandler().sendPacket(new UpdateSelectedSlotC2SPacket(slot));
+        }
+    }
+
+    private void restoreSlot(int slot) {
+        if (slot < 0 || slot > 8 || mc.player == null) {
             return;
         }
         mc.player.getInventory().selectedSlot = slot;
@@ -918,20 +1020,23 @@ public class ScaffoldModule extends Module {
     }
 
     private Vec3d hitVec(BlockPos pos, Direction face) {
+        // 对齐 Naven getVec3: 其 getRandomDoubleInRange(0.3, -0.3) 因 min>=max 恒返回常量 0.3,
+        // 即偏移是确定的 +0.3 而非随机。之前移植成真随机 nextDouble(-0.3,0.3),使 cursor 每 tick 抖动、
+        // 与 getRotation 瞄准点不一致 → DuplicateRotPlace/AirLiquidPlace。这里还原成确定常量。
         double x = pos.getX() + 0.5D;
         double y = pos.getY() + 0.5D;
         double z = pos.getZ() + 0.5D;
         if (face != Direction.UP && face != Direction.DOWN) {
             y += 0.08D;
         } else {
-            x += randomDouble(-0.3D, 0.3D);
-            z += randomDouble(-0.3D, 0.3D);
+            x += 0.3D;
+            z += 0.3D;
         }
         if (face == Direction.WEST || face == Direction.EAST) {
-            z += randomDouble(-0.3D, 0.3D);
+            z += 0.3D;
         }
         if (face == Direction.SOUTH || face == Direction.NORTH) {
-            x += randomDouble(-0.3D, 0.3D);
+            x += 0.3D;
         }
         return new Vec3d(x, y, z);
     }
@@ -945,8 +1050,7 @@ public class ScaffoldModule extends Module {
     }
 
     private boolean isHeypixelMode() {
-        String current = mode.getString();
-        return "Heypixel".equals(current) || "Gardenia".equals(current);
+        return "Heypixel".equals(mode.getString());
     }
 
     private boolean isTellyBridgeMode() {
@@ -955,6 +1059,64 @@ public class ScaffoldModule extends Module {
 
     private boolean isLegitMode() {
         return "Legit".equals(mode.getString());
+    }
+
+    private double calculateCurrentBps() {
+        double dx = mc.player.getX() - mc.player.prevX;
+        double dz = mc.player.getZ() - mc.player.prevZ;
+        return Math.sqrt(dx * dx + dz * dz) * 20.0D;
+    }
+
+    private boolean shouldKeepFov() {
+        if (!isEnabled()) {
+            return false;
+        }
+        if (isLegitMode()) {
+            return legitKeepFov.getBoolean();
+        }
+        return isHeypixelMode() && isTellyBridgeMode() && tellyKeepFov.getBoolean();
+    }
+
+    private void renderPlacementBox() {
+        Camera camera = mc.gameRenderer.getCamera();
+        Vec3d camPos = camera.getPos();
+
+        RenderSystem.disableDepthTest();
+        RenderSystem.enableBlend();
+        RenderSystem.defaultBlendFunc();
+        RenderSystem.disableCull();
+
+        Matrix4fStack modelView = RenderSystem.getModelViewStack();
+        modelView.pushMatrix();
+        modelView.identity();
+
+        Quaternionf cameraRotation = camera.getRotation();
+        Quaternionf inverseRotation = new Quaternionf(cameraRotation).conjugate();
+        modelView.rotate(cameraRotation);
+
+        VertexConsumerProvider.Immediate providers = mc.getBufferBuilders().getEntityVertexConsumers();
+        VertexConsumer lines = providers.getBuffer(RenderLayer.LINES);
+        MatrixStack matrices = new MatrixStack();
+
+        Vec3d blockCenter = Vec3d.ofCenter(blockPos);
+        Vector3f relative = new Vector3f(
+                (float) (blockCenter.x - camPos.x),
+                (float) (blockCenter.y - camPos.y),
+                (float) (blockCenter.z - camPos.z)
+        );
+        relative.rotate(inverseRotation);
+
+        matrices.push();
+        matrices.translate(relative.x(), relative.y(), relative.z());
+        Box box = new Box(blockPos).offset(-blockCenter.x, -blockCenter.y, -blockCenter.z);
+        VertexRendering.drawBox(matrices, lines, box, 1.0F, 1.0F, 1.0F, 0.4F);
+        matrices.pop();
+
+        providers.draw(RenderLayer.LINES);
+        modelView.popMatrix();
+        RenderSystem.enableDepthTest();
+        RenderSystem.disableBlend();
+        RenderSystem.enableCull();
     }
 
     private void resetRuntime() {
@@ -973,7 +1135,7 @@ public class ScaffoldModule extends Module {
         jitterCounter = 0;
         blockPos = null;
         facing = null;
-        pendingJump = false;
+        currentBps = 0.0D;
         pendingSneak = false;
         resetClutch(false);
     }
@@ -993,10 +1155,6 @@ public class ScaffoldModule extends Module {
                 stuck.setEnabled(false);
             }
         }
-    }
-
-    private double randomDouble(double min, double max) {
-        return ThreadLocalRandom.current().nextDouble(min, max);
     }
 
     private float randomFloat(float min, float max) {

@@ -26,6 +26,13 @@ public class ClientCommonNetworkHandlerMixin {
     @Shadow protected ClientConnection connection;
     private static final MinecraftClient mc = MinecraftClient.getInstance();
 
+    // 服务端旋转空间的状态机：跟踪最近一次实际发出的 yaw/pitch（服务端旋转），
+    // 用来在服务端旋转空间里重新判定 changesLook —— 复刻 Naven sendPosition 的 flag2 = (yaw-yRotLast)!=0。
+    // vanilla 自身的 changesLook 跑在真实相机空间，直行搭路（不动鼠标）时恒为 false，
+    // 导致 scaffold 的服务端旋转永远不进姿态包 → Simulation/place 旋转缺失。
+    private float gardenia$lastServerYaw = Float.NaN;
+    private float gardenia$lastServerPitch = Float.NaN;
+
     @Inject(method = "sendPacket", at = @At("HEAD"), cancellable = true)
     private void onPacketSend(Packet<?> packet, CallbackInfo ci) {
         PacketSendEvent event = new PacketSendEvent(packet);
@@ -74,14 +81,16 @@ public class ClientCommonNetworkHandlerMixin {
     private PlayerMoveC2SPacket rewriteMovePacket(PlayerMoveC2SPacket packet) {
         PlayerMotionEvent motionEvent = PlayerMotionContext.getActiveEvent();
         if (motionEvent != null) {
-            boolean changesPosition = packet.changesPosition()
-                    || mc.player != null && (packet.getX(mc.player.getX()) != motionEvent.getX()
-                    || packet.getY(mc.player.getY()) != motionEvent.getY()
-                    || packet.getZ(mc.player.getZ()) != motionEvent.getZ());
-            boolean changesLook = packet.changesLook()
-                    || mc.player != null && (packet.getYaw(mc.player.getYaw()) != motionEvent.getYaw()
-                    || packet.getPitch(mc.player.getPitch()) != motionEvent.getPitch());
-            return buildMovePacket(
+            // changesPosition 沿用 vanilla 决定（位置始终是真实坐标，状态机一致，不能改）。
+            boolean changesPosition = packet.changesPosition();
+            // changesLook 在服务端旋转空间重新判定：与上次实际发出的服务端 yaw/pitch 比较。
+            // 这样直行搭路时只要 scaffold 旋转每 tick 在变，就一定发出 look，且包内旋转与判定一致 —— 对齐 Naven。
+            boolean lookChanged = Float.isNaN(gardenia$lastServerYaw)
+                    || motionEvent.getYaw() != gardenia$lastServerYaw
+                    || motionEvent.getPitch() != gardenia$lastServerPitch;
+            boolean changesLook = packet.changesLook() || lookChanged;
+
+            PlayerMoveC2SPacket rewritten = buildMovePacket(
                     changesPosition,
                     changesLook,
                     motionEvent.getX(),
@@ -92,6 +101,11 @@ public class ClientCommonNetworkHandlerMixin {
                     motionEvent.isOnGround(),
                     packet.horizontalCollision()
             );
+            if (changesLook) {
+                gardenia$lastServerYaw = motionEvent.getYaw();
+                gardenia$lastServerPitch = motionEvent.getPitch();
+            }
+            return rewritten;
         }
         if (ToolManager.INSTANCE.ROTATION.isServerRotationActive()) {
             return ToolManager.INSTANCE.ROTATION.applyServerRotation(packet);
