@@ -213,7 +213,6 @@ public class RotationTool {
         rotationSpeed = speed;
         this.raycast = raycast;
         active = true;
-        smoothed = false;
         smooth();
     }
 
@@ -227,9 +226,12 @@ public class RotationTool {
             if (raycast != null && (Math.abs(target.x - rotations.x) > 5.0F || Math.abs(target.y - rotations.y) > 5.0F)) {
                 target = applyRaycastOffset(target, raycast);
             }
-            rotations = smoothGardenia(lastRotations, target, rotationSpeed);
+            rotations = smoothGardenia(lastRotations, target, rotationSpeed + Math.random());
         }
         smoothed = true;
+        if (mc.gameRenderer != null) {
+            mc.gameRenderer.updateCrosshairTarget(1.0F);
+        }
     }
 
     public Vec2f getServerRotation() {
@@ -512,17 +514,21 @@ public class RotationTool {
         randomAngle += (float) ((20.0F + (float) (Math.random() - 0.5D) * (Math.random() * Math.random() * Math.random() * 360.0D))
                 * (mc.player == null || mc.player.age / 10 % 2 == 0 ? -1.0F : 1.0F));
 
-        float offsetYaw = (float) (offset.x + -MathHelper.sin((float) Math.toRadians(randomAngle)) * speed);
-        float offsetPitch = (float) (offset.y + MathHelper.cos((float) Math.toRadians(randomAngle)) * speed);
-        Vec2f candidate = new Vec2f(target.x + offsetYaw, target.y + offsetPitch);
-        offset = new Vec2f(offsetYaw, offsetPitch);
+        Vec2f trueTarget = new Vec2f(target.x, target.y);
+        offset = new Vec2f(
+                (float) (offset.x + -MathHelper.sin((float) Math.toRadians(randomAngle)) * speed),
+                (float) (offset.y + MathHelper.cos((float) Math.toRadians(randomAngle)) * speed)
+        );
+        Vec2f candidate = new Vec2f(target.x + offset.x, target.y + offset.y);
 
         if (!raycast.test(candidate)) {
-            randomAngle = (float) Math.toDegrees(Math.atan2(target.x - candidate.x, candidate.y - target.y)) - 180.0F;
-            offsetYaw = (float) (offset.x + -MathHelper.sin((float) Math.toRadians(randomAngle)) * speed);
-            offsetPitch = (float) (offset.y + MathHelper.cos((float) Math.toRadians(randomAngle)) * speed);
-            candidate = new Vec2f(target.x + offsetYaw, target.y + offsetPitch);
-            offset = new Vec2f(offsetYaw, offsetPitch);
+            randomAngle = (float) Math.toDegrees(Math.atan2(trueTarget.x - candidate.x, candidate.y - trueTarget.y)) - 180.0F;
+            target = new Vec2f(candidate.x - offset.x, candidate.y - offset.y);
+            offset = new Vec2f(
+                    (float) (offset.x + -MathHelper.sin((float) Math.toRadians(randomAngle)) * speed),
+                    (float) (offset.y + MathHelper.cos((float) Math.toRadians(randomAngle)) * speed)
+            );
+            candidate = new Vec2f(target.x + offset.x, target.y + offset.y);
         }
 
         if (!raycast.test(candidate)) {
