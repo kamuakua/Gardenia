@@ -241,6 +241,46 @@ public class RotationTool {
         return mc.player == null ? new Vec2f(0.0F, 0.0F) : new Vec2f(mc.player.getYaw(), mc.player.getPitch());
     }
 
+    public Vec2f getAnimationRotation() {
+        return animationRotation;
+    }
+
+    public Vec2f getLastAnimationRotation() {
+        return lastAnimationRotation;
+    }
+
+    public boolean hasAnimationRotation() {
+        return animationRotation != null && lastAnimationRotation != null;
+    }
+
+    public float animationYaw(float fallback) {
+        if (active && animationRotation != null) {
+            return animationRotation.x;
+        }
+        return fallback;
+    }
+
+    public float lastAnimationYaw(float fallback) {
+        if (active && lastAnimationRotation != null) {
+            return lastAnimationRotation.x;
+        }
+        return fallback;
+    }
+
+    public float animationPitch(float fallback) {
+        if (active && animationRotation != null) {
+            return animationRotation.y;
+        }
+        return fallback;
+    }
+
+    public float lastAnimationPitch(float fallback) {
+        if (active && lastAnimationRotation != null) {
+            return lastAnimationRotation.y;
+        }
+        return fallback;
+    }
+
     public boolean isServerRotationActive() {
         return active && rotations != null;
     }

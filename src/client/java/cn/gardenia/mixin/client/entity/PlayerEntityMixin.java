@@ -5,6 +5,7 @@ import cn.gardenia.client.event.events.attack.AttackSlowdownEvent;
 import cn.gardenia.client.event.events.entity.EntityRemoveEvent;
 import cn.gardenia.client.event.events.movement.StayingOnGroundSurfaceEvent;
 import cn.gardenia.client.module.combat.Velocity;
+import cn.gardenia.client.tool.ToolManager;
 import net.minecraft.entity.Entity;
 import net.minecraft.entity.player.PlayerEntity;
 import net.minecraft.util.math.Vec3d;
@@ -25,6 +26,17 @@ public class PlayerEntityMixin {
     @Inject(method = "attack", at = @At("TAIL"))
     private void onAttackPost(Entity target, CallbackInfo ci) {
         EventBus.INSTANCE.post(new EntityRemoveEvent(true, target));
+    }
+
+    @Redirect(
+            method = "attack",
+            at = @At(value = "INVOKE", target = "Lnet/minecraft/entity/player/PlayerEntity;getYaw()F")
+    )
+    private float onAttackGetYaw(PlayerEntity instance) {
+        if (instance == net.minecraft.client.MinecraftClient.getInstance().player && ToolManager.INSTANCE.ROTATION.isServerRotationActive()) {
+            return ToolManager.INSTANCE.ROTATION.getServerRotation().x;
+        }
+        return instance.getYaw();
     }
 
     @Redirect(

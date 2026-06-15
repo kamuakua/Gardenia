@@ -72,4 +72,15 @@ public class LivingEntityMixin {
         }
         return entity.getPitch();
     }
+
+    @Redirect(
+            method = "turnHead",
+            at = @At(value = "INVOKE", target = "Lnet/minecraft/entity/LivingEntity;getYaw()F")
+    )
+    private float modifyHeadYaw(LivingEntity entity) {
+        if (entity == MinecraftClient.getInstance().player && ToolManager.INSTANCE.ROTATION.isServerRotationActive()) {
+            return ToolManager.INSTANCE.ROTATION.animationYaw(ToolManager.INSTANCE.ROTATION.getServerRotation().x);
+        }
+        return entity.getYaw();
+    }
 }

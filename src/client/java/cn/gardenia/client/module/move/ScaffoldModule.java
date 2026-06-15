@@ -46,6 +46,7 @@ public class ScaffoldModule extends Module {
     private static final int CLUTCH_TIMEOUT_TICKS = 35;
     private static final int CLUTCH_RELEASE_DELAY_TICKS = 2;
     private static final double CLUTCH_REACH = 4.5D;
+    private static final double SOUTH_SIDE_CLUTCH_SAFE_DISTANCE = 4.5D;
     private static final int CLUTCH_VERTICAL_SCAN = 6;
     private static final int CLUTCH_HORIZONTAL_SCAN = 4;
     private static final Direction[] CLUTCH_SUPPORT_DIRECTIONS = new Direction[]{
@@ -75,6 +76,8 @@ public class ScaffoldModule extends Module {
     private final Setting<Integer> upTellyPlaceTicks = rangedInt("UpTelly Place Ticks", "Rising ticks before place", 2, 1, 6, 1);
     private final Setting<Boolean> smartUpTellyRotations = new Setting<>("Smart UpTelly Rotations", "Stage rising rotations", true);
     private final Setting<Boolean> tellyKeepFov = new Setting<>("Keep Fov", "Keep normal FOV while Telly bridging", true);
+    private final Setting<Boolean> safeMode = new Setting<>("Safe Mode", "Use NavenAlpha SouthSide-safe target selection", false);
+    private final Setting<Boolean> testOnGround = new Setting<>("Test OnGround", "Use NavenAlpha SouthSide on-ground rotation test", false);
     private final Setting<Boolean> onGround = new Setting<>("OnGround", "Use NavenAlpha on-ground UpTelly rotations", false);
     private final Setting<Boolean> clutch = new Setting<>("Clutch", "Try to clutch while falling", true);
     private final Setting<Boolean> clutchAutoStuck = new Setting<>("Clutch Auto Stuck", "Enable Stuck during clutch", true);
@@ -96,6 +99,10 @@ public class ScaffoldModule extends Module {
     private final Consumer<RenderHudEvent> renderHudListener = this::onRenderHud;
 
     private int airTick;
+    private int southSideAirTicks;
+    private int southSideGroundTicks;
+    private int southSideVelocityTicks;
+    private boolean southSideSafeTargetActive;
     private int yLevel;
     private int targetYLevel = -1;
     private int velocityDelay;
@@ -136,6 +143,8 @@ public class ScaffoldModule extends Module {
         addSetting(upTellyPlaceTicks);
         addSetting(smartUpTellyRotations);
         addSetting(tellyKeepFov);
+        addSetting(safeMode);
+        addSetting(testOnGround);
         addSetting(onGround);
         addSetting(clutch);
         addSetting(clutchAutoStuck);
@@ -298,6 +307,7 @@ public class ScaffoldModule extends Module {
         if (velocityDelay > 0) {
             velocityDelay--;
         }
+        updateSouthSideMovementTicks();
         if (mc.player.isOnGround()) {
             airTick = 0;
             groundTicks++;
@@ -337,7 +347,12 @@ public class ScaffoldModule extends Module {
     }
 
     private void runHeypixelBridge(boolean jumpHeld) {
-        if (mc.player.isOnGround()) {
+        boolean southSideJumpDown = jumpHeld;
+        boolean southSideGroundTest = safeMode.getBoolean()
+                && testOnGround.getBoolean()
+                && southSideJumpDown
+                && southSideGroundTicks > 0;
+        if (mc.player.isOnGround() && !southSideGroundTest) {
             blockPos = null;
             facing = null;
             if (ToolManager.INSTANCE.ROTATION.isServerRotationActive()) {
@@ -351,15 +366,33 @@ public class ScaffoldModule extends Module {
         }
 
         canBuildNow = canBuildNow();
-        boolean upTelly = isTellyBridgeMode() && isMoving() && !jumpHeld && mc.player.getVelocity().y > 0.0D;
+        boolean southSideTestGround = safeMode.getBoolean()
+                && testOnGround.getBoolean()
+                && southSideJumpDown
+                && southSideGroundTicks == 1;
+        boolean upTelly = isTellyBridgeMode() && isMoving() && jumpHeld && mc.player.getVelocity().y > 0.0D;
         boolean mustPlace = mc.player.getVelocity().y <= 0.0D || mc.player.fallDistance > 0.0F || airTick >= upTellyPlaceTicks.getInt() + 1;
-        boolean useOnGround = upTelly && onGround.getBoolean();
-        boolean willPlace = canBuildNow && airTick >= tellyTick.getInt() && (!upTelly || airTick >= upTellyPlaceTicks.getInt() || mustPlace);
+        boolean useSouthSideTestOnGround = safeMode.getBoolean()
+                && testOnGround.getBoolean()
+                && southSideJumpDown
+                && southSideGroundTicks > 0;
+        boolean useOnGround = !useSouthSideTestOnGround && upTelly && onGround.getBoolean();
+        boolean willPlace = canBuildNow && southSideAirTicks >= tellyTick.getInt() && (!upTelly || airTick >= upTellyPlaceTicks.getInt() || mustPlace);
+        if (safeMode.getBoolean() && testOnGround.getBoolean() && !willPlace && southSideJumpDown) {
+            willPlace = southSideGroundTicks == 1;
+        }
+        boolean southSideForcedTarget = southSideJumpDown && applySouthSideSafeModeTarget();
+        if (southSideForcedTarget) {
+            willPlace = true;
+        }
         boolean lockToTarget = useOnGround && (mustPlace || willPlace);
 
         Vec2f rotation;
         double speed;
-        if (useOnGround) {
+        if (useSouthSideTestOnGround) {
+            rotation = getSouthSideTestOnGroundRotation(blockPos, facing, southSideTestGround);
+            speed = rotateSpeed.getInt();
+        } else if (useOnGround) {
             rotation = getOnGroundUpTellyRotation(blockPos, facing, lockToTarget);
             speed = getOnGroundUpTellyRotationSpeed(lockToTarget);
         } else {
@@ -411,7 +444,7 @@ public class ScaffoldModule extends Module {
     }
 
     private void place() {
-        if (blockPos == null || facing == null || !onAir()) {
+        if (blockPos == null || facing == null || (!onAir() && !isSouthSidePlaceTarget())) {
             return;
         }
         Vec2f rotation = ToolManager.INSTANCE.ROTATION.getServerRotation();
@@ -491,6 +524,110 @@ public class ScaffoldModule extends Module {
     private boolean isSolidAndNonInteractive(BlockPos pos) {
         BlockState state = mc.world.getBlockState(pos);
         return !state.getCollisionShape(mc.world, pos).isEmpty() && state.createScreenHandlerFactory(mc.world, pos) == null;
+    }
+
+    private void updateSouthSideMovementTicks() {
+        boolean jumpDown = mc.options != null && mc.options.jumpKey.isPressed();
+        if (mc.player.isOnGround()) {
+            southSideAirTicks = 0;
+            southSideGroundTicks = jumpDown ? southSideGroundTicks + 1 : 0;
+        } else {
+            southSideAirTicks++;
+            if (!jumpDown) {
+                southSideGroundTicks = 0;
+            } else if (southSideGroundTicks > 0 && southSideGroundTicks < 2) {
+                southSideGroundTicks++;
+            }
+        }
+        if (southSideVelocityTicks > 0) {
+            southSideVelocityTicks--;
+        }
+    }
+
+    private PlaceTarget findSouthSideTarget(BlockPos pos) {
+        if (mc.world == null || !canPlaceIn(pos)) {
+            return null;
+        }
+
+        BlockPos playerBlock = BlockPos.ofFloored(mc.player.getX(), mc.player.getY(), mc.player.getZ());
+        PlaceTarget best = null;
+        double bestDistance = Double.MAX_VALUE;
+        for (Direction direction : Direction.values()) {
+            BlockPos support = pos.offset(direction);
+            if (support.equals(playerBlock) || !isSolidAndNonInteractive(support)) {
+                continue;
+            }
+
+            Direction face = direction.getOpposite();
+            Vec3d hit = hitVec(support, face);
+            if (mc.player.getEyePos().distanceTo(hit) > CLUTCH_REACH) {
+                continue;
+            }
+
+            double distance = blockDistance(playerBlock, support);
+            if (distance < bestDistance) {
+                bestDistance = distance;
+                best = new PlaceTarget(support.toImmutable(), face);
+            }
+        }
+        return best;
+    }
+
+    private boolean applySouthSideSafeModeTarget() {
+        if (!safeMode.getBoolean()) {
+            southSideSafeTargetActive = false;
+            return false;
+        }
+
+        BlockPos underPlayer = BlockPos.ofFloored(
+                Math.floor(mc.player.getX()),
+                MathHelper.floor(mc.player.getY()) - 1,
+                Math.floor(mc.player.getZ())
+        );
+        PlaceTarget target = findSouthSideTarget(underPlayer);
+        if (target == null) {
+            southSideSafeTargetActive = false;
+            return false;
+        }
+
+        Vec3d predicted = simulateSouthSidePlayer(1);
+        double distance = predicted.distanceTo(Vec3d.ofCenter(target.support()));
+        double predictedY = simulateSouthSidePlayer(2).y;
+        if (distance >= SOUTH_SIDE_CLUTCH_SAFE_DISTANCE && target.support().getY() <= predictedY) {
+            southSideSafeTargetActive = false;
+            return false;
+        }
+
+        blockPos = target.support();
+        facing = target.face();
+        southSideVelocityTicks = 8;
+        southSideSafeTargetActive = true;
+        return true;
+    }
+
+    private Vec3d simulateSouthSidePlayer(int ticks) {
+        Vec3d position = mc.player.getPos();
+        Vec3d velocity = mc.player.getVelocity();
+        for (int i = 0; i < ticks; i++) {
+            position = position.add(velocity);
+            velocity = new Vec3d(velocity.x * 0.91D, (velocity.y - 0.08D) * 0.98D, velocity.z * 0.91D);
+        }
+        return position;
+    }
+
+    private static double blockDistance(BlockPos from, BlockPos to) {
+        int dx = from.getX() - to.getX();
+        int dy = from.getY() - to.getY();
+        int dz = from.getZ() - to.getZ();
+        return Math.sqrt(dx * dx + dy * dy + dz * dz);
+    }
+
+    private boolean isSouthSidePlaceTarget() {
+        return safeMode.getBoolean()
+                && southSideSafeTargetActive
+                && blockPos != null
+                && facing != null
+                && canPlaceIn(blockPos.offset(facing));
     }
 
     private boolean runClutch() {
@@ -759,6 +896,47 @@ public class ScaffoldModule extends Module {
             rotation = new Vec2f(reference.x + MathHelper.clamp(yawDelta, (float) -maxStep, (float) maxStep), rotation.y);
         }
         return applyRotationJitter(rotation, reference);
+    }
+
+    private Vec2f getSouthSideTestOnGroundRotation(BlockPos pos, Direction direction, boolean forcedTarget) {
+        Vec2f target = ToolManager.INSTANCE.ROTATION.calculateBlock(pos, direction);
+        Vec2f reference = ToolManager.INSTANCE.ROTATION.getServerRotation();
+        float yawDistance = MathHelper.wrapDegrees(target.x - reference.x);
+
+        if (southSideVelocityTicks > 0) {
+            return target;
+        }
+        if (southSideGroundTicks > 0) {
+            if (!safeMode.getBoolean() || !testOnGround.getBoolean() || mc.options.jumpKey.isPressed()) {
+                switch (southSideGroundTicks) {
+                    case 1 -> {
+                        if (!forcedTarget) {
+                            return new Vec2f(reference.x + MathHelper.wrapDegrees(yawDistance / 2.0F), 75.5F);
+                        }
+                        return ToolManager.INSTANCE.ROTATION.calculate(mc.player.getEyePos(), hitVec(pos, direction));
+                    }
+                    case 2 -> {
+                        return new Vec2f(mc.player.getYaw(), 75.5F);
+                    }
+                    default -> {
+                    }
+                }
+            } else {
+                return new Vec2f(mc.player.getYaw(), 75.5F);
+            }
+        }
+        if (!forcedTarget) {
+            float yawStep = southSideAirTicks == 1 ? 80.0F : 50.0F;
+            yawStep -= randomFloat(0.001F, 0.005F);
+            return new Vec2f(reference.x + MathHelper.clamp(yawDistance, -yawStep, yawStep), target.y);
+        }
+        if (southSideGroundTicks == 1) {
+            return ToolManager.INSTANCE.ROTATION.calculate(mc.player.getEyePos(), hitVec(pos, direction));
+        }
+        if (southSideGroundTicks == 2) {
+            return new Vec2f(mc.player.getYaw(), 75.5F);
+        }
+        return target;
     }
 
     private Vec2f applyRotationJitter(Vec2f rotation, Vec2f reference) {
@@ -1143,6 +1321,10 @@ public class ScaffoldModule extends Module {
 
     private void resetRuntime() {
         airTick = 0;
+        southSideAirTicks = 0;
+        southSideGroundTicks = 0;
+        southSideVelocityTicks = 0;
+        southSideSafeTargetActive = false;
         targetYLevel = -1;
         velocityDelay = 0;
         groundTicks = 0;
@@ -1203,5 +1385,8 @@ public class ScaffoldModule extends Module {
     }
 
     private record ClutchTarget(BlockPos placePos, BlockPos support, Direction face, Vec3d hit, Vec2f rotation) {
+    }
+
+    private record PlaceTarget(BlockPos support, Direction face) {
     }
 }
